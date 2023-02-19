@@ -1,1 +1,1 @@
-# xprt it's a test repository
+# xprt is a test repository
