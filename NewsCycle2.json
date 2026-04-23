@@ -1,0 +1,13 @@
+{
+  "spec": 1,
+  "fonts": {
+    "regular": {
+      "name": "Regular",
+      "main": "https://github.com/google/fonts/raw/main/ofl/newscycle/NewsCycle-Regular.ttf"
+    },
+    "bold": {
+      "name": "Bold",
+      "main": "https://github.com/google/fonts/raw/main/ofl/newscycle/NewsCycle-Bold.ttf"
+    }
+  }
+}
