@@ -3,11 +3,13 @@
   "spec": 1,
   "fonts": [
     {
-      "postScriptName": "NewsCycle-Regular",
+      "name": "Regular",
+      "main": "NewsCycle-Regular",
       "url": "https://github.com/google/fonts/raw/main/ofl/newscycle/NewsCycle-Regular.ttf"
     },
     {
-      "postScriptName": "NewsCycle-Bold",
+      "name": "Bold",
+      "main": "NewsCycle-Bold",
       "url": "https://github.com/google/fonts/raw/main/ofl/newscycle/NewsCycle-Bold.ttf"
     }
   ]
