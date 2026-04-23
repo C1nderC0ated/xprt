@@ -1,0 +1,14 @@
+{
+  "name": "NewsCycle",
+  "spec": 1,
+  "fonts": [
+    {
+      "postScriptName": "NewsCycle-Regular",
+      "url": "https://github.com/google/fonts/raw/main/ofl/newscycle/NewsCycle-Regular.ttf"
+    },
+    {
+      "postScriptName": "NewsCycle-Bold",
+      "url": "https://github.com/google/fonts/raw/main/ofl/newscycle/NewsCycle-Bold.ttf"
+    }
+  ]
+}
