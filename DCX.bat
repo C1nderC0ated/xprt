@@ -97,6 +97,98 @@ if "%DEVICE_OK%"=="0" (
     set "MODEL=(not connected yet)"
     goto wirelessadb
 )
+rem  A device answered - now decide WHICH one, before any adb shell runs. With two
+rem  attached (phone + tablet, an emulator, or the USB/Wi-Fi pair "Enable over USB"
+rem  creates) every call below would otherwise fail with "more than one device".
+call :pick_device
+
+:pick_device
+:: Decides WHICH attached device every later adb call talks to, by setting ANDROID_SERIAL.
+::
+:: Why this is needed. adb refuses to act when more than one device is attached - every
+:: command dies with "more than one device/emulator" - and DCX had no targeting at all:
+:: no -s, no ANDROID_SERIAL, across ~1500 adb calls. The startup probe only checked that
+:: AT LEAST ONE device was authorised, so it happily reported a healthy device and then
+:: every menu failed.
+::
+:: The case that makes this urgent is one DCX creates itself. Wireless ADB -> "Enable over
+:: USB" runs `adb tcpip 5555` and connects over Wi-Fi WHILE THE CABLE IS STILL IN, so the
+:: same phone appears twice: once by USB serial, once as ip:5555. From that moment the whole
+:: tool stops working, through its own documented workflow.
+::
+:: ANDROID_SERIAL is why this costs one routine instead of 1500 edits: adb reads it from the
+:: environment, and a batch `set` is inherited by every child process. No call site changes.
+::
+:: Returns 1 when nothing is attached, so callers can keep their existing no-device paths.
+:: Clear last run's arrays first - re-picking after a disconnect would otherwise leave
+:: _pd_s[3] behind from a three-device run and quietly outlive the list it described.
+for /f "delims==" %%v in ('set _pd_s[ 2^>nul') do set "%%v="
+for /f "delims==" %%v in ('set _pd_d[ 2^>nul') do set "%%v="
+set "_pd_n=0"
+for /f "skip=1 tokens=1,2,*" %%a in ('adb devices -l ^<nul 2^>nul') do (
+    if "%%b"=="device" (
+        set /a _pd_n+=1
+        set "_pd_s[!_pd_n!]=%%a"
+        set "_pd_d[!_pd_n!]=%%c"
+    )
+)
+if "%_pd_n%"=="0" (
+    set "ANDROID_SERIAL="
+    exit /b 1
+)
+if "%_pd_n%"=="1" (
+    set "ANDROID_SERIAL=!_pd_s[1]!"
+    exit /b 0
+)
+
+:_pd_ask
+cls
+call :logo
+echo.
+echo  %y%More than one device is attached.%w% adb cannot guess which one you mean, so
+echo  pick the target - everything DCX does from here goes to it.
+echo.
+for /l %%i in (1,1,%_pd_n%) do call :_pd_row %%i
+echo.
+echo  If one entry is USB and another is Wi-Fi with the same model, that is the SAME
+echo  phone reached two ways - either works, and "Enable over USB" leaves it like this.
+echo.
+set "_pd_c=" & set /p _pd_c="Device number >> "
+if not defined _pd_c goto _pd_ask
+echo(!_pd_c!| findstr /r /x /c:"[0-9][0-9]*" >nul || goto _pd_ask
+if !_pd_c! LSS 1 goto _pd_ask
+:: "01" passes all three checks above - findstr accepts it, and 01 compares as 1 - but
+:: _pd_s[01] is not a variable that exists, so the assignment would silently blank
+:: ANDROID_SERIAL and hand adb straight back the ambiguity this routine exists to remove.
+:: Range checks are not enough; require the entry itself. (set /a would be worse: it reads
+:: a leading zero as octal.)
+if not defined _pd_s[!_pd_c!] goto _pd_ask
+if !_pd_c! GTR %_pd_n% goto _pd_ask
+set "ANDROID_SERIAL=!_pd_s[%_pd_c%]!"
+if not defined ANDROID_SERIAL goto _pd_ask
+echo.
+echo  [%g%+%w%] Targeting !ANDROID_SERIAL!
+timeout /t 1 /nobreak > nul
+exit /b 0
+
+:_hdr_via
+:: Sets _hdr_suffix to "   via USB" / "   via Wi-Fi" when a target is pinned, empty otherwise.
+:: Deliberately a routine rather than an if-block in the caller: classifying the serial needs
+:: a pipe, and a pipe inside ( ) runs both sides in subshells - which is the sort of thing
+:: that works right up until it does not. :_pd_row keeps the same top-level shape.
+set "_hdr_suffix="
+if not defined ANDROID_SERIAL exit /b
+set "_hdr_suffix=   via USB"
+echo(!ANDROID_SERIAL!| findstr /c:":" >nul && set "_hdr_suffix=   via Wi-Fi"
+exit /b
+
+:_pd_row
+:: %1 = index. Labels the transport so a USB/Wi-Fi pair of the same phone is obvious.
+set "_pd_i=%~1"
+set "_pd_via=USB  "
+echo(!_pd_s[%_pd_i%]!| findstr /c:":" >nul && set "_pd_via=Wi-Fi"
+echo     %g%[%w%%_pd_i%%g%]%w% !_pd_via!  !_pd_s[%_pd_i%]!   !_pd_d[%_pd_i%]!
+exit /b
 
 :detect_device
 :: Retrieve the current Android API level safely
@@ -111,7 +203,8 @@ if not defined SDK set "SDK=0"
 :: Capture device model for friendlier messages
 set "MODEL="
 for /f "delims=" %%i in ('adb shell getprop ro.product.model 2^>nul ^<nul') do set "MODEL=%%i"
-echo [%g%+%w%] Device: %MODEL%   API level: %SDK%
+call :_hdr_via
+echo [%g%+%w%] Device: %MODEL%   API level: %SDK%!_hdr_suffix!
 timeout /t 1 /nobreak > nul
 goto menu
 
@@ -405,6 +498,7 @@ for /f "delims=" %%A in ('where adb 2^>nul') do (
     set "DCX_ADB=%%~fA"
     goto _resolve_adb_done
 )
+
 :_resolve_adb_done
 if not defined DCX_ADB for %%A in (adb.exe) do set "DCX_ADB=%%~fA"
 if defined DCX_ADB if not exist "!DCX_ADB!" set "DCX_ADB="
@@ -477,7 +571,6 @@ set "OUT=%~1"
 ) >> "%OUT%"
 endlocal
 exit /b 0
-
 :: ===========================================================================
 :: _dcfg_warn - one-time honest warning about device_config writes on Android 14+.
 :: Per the AOSP change in Android 14 (API 34), "shell can no longer write most
@@ -808,7 +901,8 @@ echo                 %g%[%w%3%g%]%w% Enable over USB      (adb tcpip 5555 + auto
 echo                 %g%[%w%4%g%]%w% Disconnect all Wi-Fi connections
 echo                 %g%[%w%5%g%]%w% Switch device back to USB mode
 echo                 %g%[%w%6%g%]%w% Help - where the ports and code live
-echo                 %g%[%w%7%g%]%w% Back
+echo                 %g%[%w%7%g%]%w% Select target device  (when more than one is attached)
+echo                 %g%[%w%8%g%]%w% Back
 set "wa=" & set /p wa="Choose An Option >> "
 if "!wa!"=="1" goto wadb_pair
 if "!wa!"=="2" goto wadb_connect
@@ -816,10 +910,18 @@ if "!wa!"=="3" goto wadb_tcpip
 if "!wa!"=="4" goto wadb_disconnect
 if "!wa!"=="5" goto wadb_usb
 if "!wa!"=="6" goto wadb_help
-if "!wa!"=="7" goto wadb_back
+if "!wa!"=="7" (
+    call :pick_device
+    goto wirelessadb
+)
+if "!wa!"=="8" goto wadb_back
 goto wirelessadb
 
 :wadb_back
+rem  The attached-device list may have changed while in this menu (a connect, a
+rem  disconnect, or tcpip adding a second entry for the same phone), so re-resolve
+rem  the target before handing control back.
+call :pick_device
 :: If we arrived from the no-device startup path, the model/API probe
 :: was skipped (SDK defaulted to 0) - run it now that a device may be
 :: attached. Re-probing on a genuine API-0 is harmless.
@@ -1224,8 +1326,31 @@ if not defined refresh_rate (
 )
 echo [%b%^^!%w%]Refresh rate : !refresh_rate!
 timeout /t 1 /nobreak > nul
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(1 / !refresh_rate!, 10)"') do set result=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(!result! * 1000000000, 0)"') do set final=%%i
+:: One PowerShell launch instead of nine. This block used to spawn a process per number -
+:: seven divisions and two setup steps - which is several seconds of pure process creation
+:: for arithmetic that takes microseconds. The formulas are copied verbatim, including the
+:: -1 / +1 / -2 terms sitting INSIDE their Round() calls, so the values are identical.
+:: Not rewritten in pure cmd on purpose: "set /a" is 32-bit signed, and final*114 overflows
+:: below about 53 Hz, so integer math would trade three seconds for a silent wrong answer.
+:: The refresh rate goes in through the environment rather than the command line, so a stray
+:: character in it can never reach PowerShell's parser.
+:: Clear first: one for/f now produces all eight values, so if PowerShell fails the loop
+:: simply does not run - and stale values from a previous pass, or empty ones, would be
+:: written straight to setprop below. Blank them, then refuse to continue without them.
+set "final=" & set "eaglpos=" & set "apsofs=" & set "elfpsofsasdasx="
+set "elrdur=" & set "sfelpoassd=" & set "rgsmplsa=" & set "rgstis="
+set "PT_RR=!refresh_rate!"
+for /f "tokens=1-8" %%a in ('powershell -NoProfile -Command "$r=[double]$env:PT_RR; $f=[math]::Round([math]::Round(1/$r,10)*1000000000,0); @($f,[math]::Round($f/18.518520,0),[math]::Round($f/8.771929,0),[math]::Round($f/4.7619050,0),[math]::Round($f/3.7037029-1,0),[math]::Round($f/3.3333336900,0),[math]::Round($f/1.851852+1,0),[math]::Round($f/0.8771929-2,0)) -join ' '"') do (
+    set "final=%%a"
+    set "eaglpos=%%b"
+    set "apsofs=%%c"
+    set "elfpsofsasdasx=%%d"
+    set "elrdur=%%e"
+    set "sfelpoassd=%%f"
+    set "rgsmplsa=%%g"
+    set "rgstis=%%h"
+)
+set "PT_RR="
 echo [%g%+%w%] Check Result . . . .
 echo.
 timeout /t 1 /nobreak > nul
@@ -1233,14 +1358,15 @@ echo.
 echo.
 echo [%y%i%w%] Experimental SF phase offsets ^(volatile; NOT a refresh-rate lock^).
 echo [%b%^^!%w%] SurfaceFlinger Setup. . .
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 18.518520, 0)"') do set eaglpos=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 8.771929, 0)"') do set apsofs=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 4.7619050, 0)"') do set elfpsofsasdasx=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 3.7037029 - 1, 0)"') do set elrdur=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 3.3333336900, 0)"') do set sfelpoassd=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 1.851852 + 1, 0)"') do set rgsmplsa=%%i
-for /f "delims=" %%i in ('powershell -Command "[math]::Round(%final% / 0.8771929 -2, 0)"') do set rgstis=%%i
 chcp 65001 >nul
+if not defined rgstis (
+    echo.
+    echo  [%r%x%w%] Could not compute the SurfaceFlinger offsets ^(PowerShell unavailable?^).
+    echo      Nothing was written - your current SF properties are untouched.
+    echo.
+    pause > nul
+    goto menu
+)
 timeout /t 2 /nobreak > nul
 ::elrdur
 adb shell setprop debug.sf.region_sampling_duration_ns %elrdur% <nul
@@ -2072,7 +2198,7 @@ goto sf144
 cls
 title 144hz SF : Gaming Mode
 call :logo
-:: Gaming Mode 144Hz — optimised for maximum throughput, minimal SF latency
+:: Gaming Mode 144Hz - optimised for maximum throughput, minimal SF latency
 :: early group (render duration)
 set v144_early=3055555
 adb shell setprop debug.sf.region_sampling_duration_ns %v144_early% <nul
@@ -2116,7 +2242,7 @@ goto sftmenu
 cls
 title 144hz SF : Battery Mode
 call :logo
-:: Battery Mode 144Hz — reduced render budget to ease GPU/SF pressure
+:: Battery Mode 144Hz - reduced render budget to ease GPU/SF pressure
 set v144_early=1722222
 adb shell setprop debug.sf.region_sampling_duration_ns %v144_early% <nul
 adb shell setprop debug.sf.cached_set_render_duration_ns %v144_early% <nul
@@ -2153,7 +2279,7 @@ goto sftmenu
 cls
 title 144hz SF : Balance Mode
 call :logo
-:: Balance Mode 144Hz — smooth at full refresh rate without gaming overhead
+:: Balance Mode 144Hz - smooth at full refresh rate without gaming overhead
 set v144_early=1638888
 adb shell setprop debug.sf.region_sampling_duration_ns %v144_early% <nul
 adb shell setprop debug.sf.cached_set_render_duration_ns %v144_early% <nul
@@ -2364,20 +2490,26 @@ if "!package!"=="" (
     pause > nul
     goto Optimize
 )
+set "_PKGCHK=!package!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto Optimize
+)
 :: Verify the package actually exists on the device
-adb shell pm list packages 2>nul <nul | findstr /C:"package:%package%" > nul
+adb shell pm list packages 2>nul <nul | findstr /C:"package:!package!" > nul
 if errorlevel 1 (
-    echo [%r%^^!%w%] Package "%package%" is not installed on the device.
+    echo [%r%^^!%w%] Package "!package!" is not installed on the device.
     pause > nul
     goto Optimize
 )
 echo.
-echo Compiling %package% with mode %mode%...
-adb shell cmd package compile -m %mode% -f %package% <nul
+echo Compiling !package! with mode %mode%...
+adb shell cmd package compile -m %mode% -f !package! <nul
 if errorlevel 1 (
-    echo [%r%^^!%w%] Compile reported a failure for %package%.
+    echo [%r%^^!%w%] Compile reported a failure for !package!.
 ) else (
-    echo [%g%+%w%] Compile finished for %package% ^(mode %mode%^).
+    echo [%g%+%w%] Compile finished for !package! ^(mode %mode%^).
 )
 echo Press Any Button To Go Back
 pause > nul
@@ -2572,6 +2704,7 @@ if errorlevel 1 (
     timeout /t 2 /nobreak >nul
     goto appbattery
 )
+
 :appbattery_menu
 cls
 title Per-app battery - !BPKG!
@@ -2646,7 +2779,6 @@ echo.
 echo  Press any key . . .
 pause >nul
 goto appbattery_menu
-
 :: ===================================================================
 :: Finish Activities  (always_finish_activities - developer setting)
 :: HONEST CAVEAT: documented global setting, but a well-known Android
@@ -2702,7 +2834,6 @@ echo.
 echo Press Any Button To Go Back
 pause > nul
 goto nextpage
-
 :: ===================================================================
 :: NEW: Wake-Lock Audit  (battery drain diagnostic)
 :: Wake locks prevent CPU/screen sleep. A misbehaving app holding a
@@ -3126,25 +3257,31 @@ title Revert Your Package To Stock
 call :logo
 set "pkgv2=" & set /p pkgv2="Put Your Package Name Here >> "
 if "!pkgv2!"=="" goto nexthibernateappphase
+set "_PKGCHK=!pkgv2!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto nexthibernateappphase
+)
 echo.
-echo [#] Set %pkgv2% To Stock . . . .
+echo [#] Set !pkgv2! To Stock . . . .
 echo.
-adb shell cmd appops reset %pkgv2% <nul
-adb shell cmd activity set-bg-restriction-level --user 0 %pkgv2% unrestricted <nul
-adb shell cmd activity set-inactive %pkgv2% false <nul
-adb shell cmd activity set-standby-bucket %pkgv2% active <nul
-adb shell cmd app_hibernation set-state %pkgv2% false <nul
-adb shell cmd dropbox remove-low-priority %pkgv2% <nul
-adb shell cmd tare set-vip 0 %pkgv2% true <nul
+adb shell cmd appops reset !pkgv2! <nul
+adb shell cmd activity set-bg-restriction-level --user 0 !pkgv2! unrestricted <nul
+adb shell cmd activity set-inactive !pkgv2! false <nul
+adb shell cmd activity set-standby-bucket !pkgv2! active <nul
+adb shell cmd app_hibernation set-state !pkgv2! false <nul
+adb shell cmd dropbox remove-low-priority !pkgv2! <nul
+adb shell cmd tare set-vip 0 !pkgv2! true <nul
 echo.
 set "_hib="
-for /f "delims=" %%i in ('adb shell cmd app_hibernation get-state %pkgv2% 2^>nul ^<nul') do set "_hib=%%i"
+for /f "delims=" %%i in ('adb shell cmd app_hibernation get-state !pkgv2! 2^>nul ^<nul') do set "_hib=%%i"
 if /i "!_hib!"=="false" (
-    echo [%g%+%w%] %pkgv2% hibernation state = false
+    echo [%g%+%w%] !pkgv2! hibernation state = false
 ) else if /i "!_hib!"=="true" (
-    echo [%y%WARN%w%] %pkgv2% still reports hibernated - reboot may be required.
+    echo [%y%WARN%w%] !pkgv2! still reports hibernated - reboot may be required.
 ) else (
-    echo [#] %pkgv2% marked stock; hibernation readout was "!_hib!"
+    echo [#] !pkgv2! marked stock; hibernation readout was "!_hib!"
 )
 echo [#] Reboot recommended to finish the process.
 echo.
@@ -3162,8 +3299,14 @@ if "!pkgv2!"=="" (
     timeout /t 2 /nobreak > nul
     goto nexthibernateappphase
 )
+set "_PKGCHK=!pkgv2!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto nexthibernateappphase
+)
 echo.
-echo [#] Set %pkgv2% To Hibernate . . . .
+echo [#] Set !pkgv2! To Hibernate . . . .
 echo.
 for %%b in (
     FOREGROUND_SERVICE_SPECIAL_USE
@@ -3173,39 +3316,39 @@ for %%b in (
     START_FOREGROUND
     WAKE_LOCK
 ) do (
-:: !pkgv2! (delayed): this is the only %pkgv2% sitting INSIDE a ( ) block (the
+:: !pkgv2! (delayed): this is the only !pkgv2! sitting INSIDE a ( ) block (the
 :: for %%b ... do (...) loop). pkgv2 is typed by the user; a ")" in it would close the
 :: do-block early at parse time and break the script - the same class as the :Summary
 :: crash in sincript. Delayed expansion keeps the block structure intact. The bare
-:: %pkgv2% statements outside any block (below) are not a cmd-parse risk.
+:: !pkgv2! statements outside any block (below) are not a cmd-parse risk.
     adb shell cmd appops set !pkgv2! %%b ignore <nul > nul 2>&1
 )
-adb shell cmd activity service-restart-backoff disable %pkgv2% <nul
-adb shell cmd activity set-bg-restriction-level --user 0 %pkgv2% hibernation <nul
-adb shell cmd activity set-foreground-service-delegate --user 0 %pkgv2% stop <nul
-adb shell cmd activity set-inactive %pkgv2% true <nul
-adb shell cmd activity set-standby-bucket %pkgv2% restricted <nul
-adb shell cmd app_hibernation set-state %pkgv2% true <nul
-adb shell cmd deviceidle sys-whitelist -%pkgv2% <nul
-adb shell cmd deviceidle whitelist -%pkgv2% <nul
-adb shell cmd dropbox add-low-priority %pkgv2% <nul
-adb shell cmd package art clear-app-profiles %pkgv2% <nul
-adb shell cmd package log-visibility --disable %pkgv2% <nul
-adb shell cmd shortcut clear-shortcuts %pkgv2% <nul
-adb shell cmd tare set-vip 0 %pkgv2% false <nul
-adb shell cmd usagestats clear-last-used-timestamps %pkgv2% <nul
-adb shell am force-stop %pkgv2% <nul
-adb shell am kill %pkgv2% <nul
-adb shell am stop-app %pkgv2% <nul
-adb shell cmd activity force-stop %pkgv2% <nul
-adb shell cmd activity kill %pkgv2% <nul
+adb shell cmd activity service-restart-backoff disable !pkgv2! <nul
+adb shell cmd activity set-bg-restriction-level --user 0 !pkgv2! hibernation <nul
+adb shell cmd activity set-foreground-service-delegate --user 0 !pkgv2! stop <nul
+adb shell cmd activity set-inactive !pkgv2! true <nul
+adb shell cmd activity set-standby-bucket !pkgv2! restricted <nul
+adb shell cmd app_hibernation set-state !pkgv2! true <nul
+adb shell cmd deviceidle sys-whitelist -!pkgv2! <nul
+adb shell cmd deviceidle whitelist -!pkgv2! <nul
+adb shell cmd dropbox add-low-priority !pkgv2! <nul
+adb shell cmd package art clear-app-profiles !pkgv2! <nul
+adb shell cmd package log-visibility --disable !pkgv2! <nul
+adb shell cmd shortcut clear-shortcuts !pkgv2! <nul
+adb shell cmd tare set-vip 0 !pkgv2! false <nul
+adb shell cmd usagestats clear-last-used-timestamps !pkgv2! <nul
+adb shell am force-stop !pkgv2! <nul
+adb shell am kill !pkgv2! <nul
+adb shell am stop-app !pkgv2! <nul
+adb shell cmd activity force-stop !pkgv2! <nul
+adb shell cmd activity kill !pkgv2! <nul
 echo.
 set "_hib="
-for /f "delims=" %%i in ('adb shell cmd app_hibernation get-state %pkgv2% 2^>nul ^<nul') do set "_hib=%%i"
+for /f "delims=" %%i in ('adb shell cmd app_hibernation get-state !pkgv2! 2^>nul ^<nul') do set "_hib=%%i"
 if /i "!_hib!"=="true" (
-    echo [%g%+%w%] %pkgv2% hibernation state = true
+    echo [%g%+%w%] !pkgv2! hibernation state = true
 ) else if /i "!_hib!"=="false" (
-    echo [%y%WARN%w%] %pkgv2% hibernation state still false - commands may be ignored on this OEM.
+    echo [%y%WARN%w%] !pkgv2! hibernation state still false - commands may be ignored on this OEM.
 ) else (
     echo [%y%WARN%w%] Could not read hibernation state ^(got "!_hib!"^) - applied best-effort.
 )
@@ -5312,7 +5455,6 @@ if errorlevel 1 (
 echo Press Any Button To Go Back
 pause > nul
 goto Gaming
-
 :: ===================================================================
 :: GMS safe subset - ads/telemetry-adjacent packages only.
 :: Keeps com.google.android.gms enabled. Only acts on packages that are
@@ -5498,15 +5640,21 @@ cls
 title Remove Settings
 set "package=" & set /p package="Put Your Package Name Here >> "
 if "!package!"=="" goto Gaming
-adb shell device_config delete game_overlay %package% <nul > nul
-adb shell cmd game reset --user 0 %package% <nul
+set "_PKGCHK=!package!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto Gaming
+)
+adb shell device_config delete game_overlay !package! <nul > nul
+adb shell cmd game reset --user 0 !package! <nul
 cls
 echo.
 echo.
-echo [%r%^^!%w%] If %package% Is Glitching , Please Clear %package% Cache And Try it again.
+echo [%r%^^!%w%] If !package! Is Glitching , Please Clear !package! Cache And Try it again.
 echo.
 echo.
-echo %package% Settings Is Removed , Press Any Button To Go Back
+echo !package! Settings Is Removed , Press Any Button To Go Back
 pause > nul
 goto Gaming
 
@@ -5517,12 +5665,18 @@ title Low Settings
 call :_dcfg_warn
 set "package=" & set /p package="Put Your Package Name Here >> "
 if "!package!"=="" goto Gaming
-adb shell device_config put game_overlay %package% mode=1 <nul
-adb shell cmd game downscale 0.55 %package% <nul
+set "_PKGCHK=!package!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto Gaming
+)
+adb shell device_config put game_overlay !package! mode=1 <nul
+adb shell cmd game downscale 0.55 !package! <nul
 cls
 echo.
 echo.
-echo [%r%^^!%w%] If %package% Is Glitching , Please Clear %package% Cache And Try it again.
+echo [%r%^^!%w%] If !package! Is Glitching , Please Clear !package! Cache And Try it again.
 echo.
 echo.
 echo Press Any Button To Go Back
@@ -5536,13 +5690,19 @@ title Medium Settings
 call :_dcfg_warn
 set "package=" & set /p package="Put Your Package Name Here >> "
 if "!package!"=="" goto Gaming
-adb shell device_config put game_overlay %package% mode=1 <nul
-adb shell device_config get game_overlay %package% <nul
-adb shell cmd game downscale 0.75 %package% <nul
+set "_PKGCHK=!package!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto Gaming
+)
+adb shell device_config put game_overlay !package! mode=1 <nul
+adb shell device_config get game_overlay !package! <nul
+adb shell cmd game downscale 0.75 !package! <nul
 cls
 echo.
 echo.
-echo [%r%^^!%w%] If %package% Is Glitching , Please Clear %package% Cache And Try it again.
+echo [%r%^^!%w%] If !package! Is Glitching , Please Clear !package! Cache And Try it again.
 echo.
 echo.
 echo Press Any Button To Go Back
@@ -5591,7 +5751,6 @@ title Performance Mode : Off
 :: toggling Off did not actually revert anything.
 adb shell device_config delete storage_native_boot target_dirty_ratio <nul > nul 2>&1
 adb shell device_config delete storage_native_boot target_dirty_background_ratio <nul > nul 2>&1
-
 adb shell logcat -G 256kb <nul
 adb shell settings delete global activity_manager_constants <nul > nul 2>&1
 adb shell device_config delete runtime_native_boot iorap_readahead_enable <nul > nul 2>&1
@@ -5773,7 +5932,6 @@ echo storage_native_boot/target_dirty_ratio : 35
 echo storage_native_boot/target_dirty_background_ratio : 5
 adb shell device_config put storage_native_boot target_dirty_ratio 35 <nul
 adb shell device_config put storage_native_boot target_dirty_background_ratio 5 <nul
-
 echo Press Any Button To Go Back
 pause > nul
 goto Gaming
@@ -5815,19 +5973,25 @@ echo  Tip: use "List installed packages" first if you don't know the name.
 echo.
 set "pkg=" & set /p pkg="Package name (blank = cancel) >> "
 if "!pkg!"=="" goto appmgr
-adb shell pm list packages < nul 2>nul | findstr /C:"package:%pkg%" >nul
+set "_PKGCHK=!pkg!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto appmgr
+)
+adb shell pm list packages < nul 2>nul | findstr /C:"package:!pkg!" >nul
 if errorlevel 1 (
-    echo [%r%^^!%w%] "%pkg%" is not installed.
+    echo [%r%^^!%w%] "!pkg!" is not installed.
     pause >nul
     goto appmgr_restrict
 )
-adb shell cmd appops set %pkg% RUN_IN_BACKGROUND deny <nul
+adb shell cmd appops set !pkg! RUN_IN_BACKGROUND deny <nul
 echo.
 set "_ao="
-for /f "delims=" %%i in ('adb shell cmd appops get %pkg% RUN_IN_BACKGROUND 2^>nul ^<nul') do set "_ao=%%i"
+for /f "delims=" %%i in ('adb shell cmd appops get !pkg! RUN_IN_BACKGROUND 2^>nul ^<nul') do set "_ao=%%i"
 echo  Device reports: !_ao!
 echo(!_ao!| findstr /I /C:"deny" >nul
-if errorlevel 1 (echo [%r%^^!%w%] Restrict may not have landed.) else (echo [%g%+%w%] Background denied for %pkg%.)
+if errorlevel 1 (echo [%r%^^!%w%] Restrict may not have landed.) else (echo [%g%+%w%] Background denied for !pkg!.)
 pause >nul
 goto appmgr
 
@@ -5839,19 +6003,25 @@ echo  Re-allows RUN_IN_BACKGROUND for an app (undo of Restrict).
 echo.
 set "pkg=" & set /p pkg="Package name (blank = cancel) >> "
 if "!pkg!"=="" goto appmgr
-adb shell pm list packages < nul 2>nul | findstr /C:"package:%pkg%" >nul
+set "_PKGCHK=!pkg!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto appmgr
+)
+adb shell pm list packages < nul 2>nul | findstr /C:"package:!pkg!" >nul
 if errorlevel 1 (
-    echo [%r%^^!%w%] "%pkg%" is not installed.
+    echo [%r%^^!%w%] "!pkg!" is not installed.
     pause >nul
     goto appmgr_allow
 )
-adb shell cmd appops set %pkg% RUN_IN_BACKGROUND allow <nul
+adb shell cmd appops set !pkg! RUN_IN_BACKGROUND allow <nul
 echo.
 set "_ao="
-for /f "delims=" %%i in ('adb shell cmd appops get %pkg% RUN_IN_BACKGROUND 2^>nul ^<nul') do set "_ao=%%i"
+for /f "delims=" %%i in ('adb shell cmd appops get !pkg! RUN_IN_BACKGROUND 2^>nul ^<nul') do set "_ao=%%i"
 echo  Device reports: !_ao!
 echo(!_ao!| findstr /I /C:"allow" >nul
-if errorlevel 1 (echo [%r%^^!%w%] Allow may not have landed.) else (echo [%g%+%w%] Background allowed for %pkg%.)
+if errorlevel 1 (echo [%r%^^!%w%] Allow may not have landed.) else (echo [%g%+%w%] Background allowed for !pkg!.)
 pause >nul
 goto appmgr
 :: ===================================================================
@@ -5873,25 +6043,31 @@ echo  never remove com.hoffnung - it looks like bloat but bootloops.
 echo.
 set "pkg=" & set /p pkg="Package name (blank = cancel) >> "
 if "!pkg!"=="" goto appmgr
+set "_PKGCHK=!pkg!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto appmgr
+)
 set "BLOCKED=0"
 for %%c in (com.android.systemui com.hoffnung com.android.phone com.android.settings com.miui.daemon com.android.systemui.plugins com.android.providers.telephony com.huawei.hwid com.huawei.android.pushagent com.huawei.hwasm com.huawei.android.hwouc com.huawei.systemserver) do if /i "!pkg!"=="%%c" set "BLOCKED=1"
 if "%BLOCKED%"=="1" (
-    echo [%r%BLOCKED%w%] "%pkg%" is a critical package and will not be removed.
+    echo [%r%BLOCKED%w%] "!pkg!" is a critical package and will not be removed.
     pause >nul
     goto appmgr_debloat_input
 )
-adb shell pm list packages < nul 2>nul | findstr /C:"package:%pkg%" >nul
+adb shell pm list packages < nul 2>nul | findstr /C:"package:!pkg!" >nul
 if errorlevel 1 (
-    echo [%r%^^!%w%] "%pkg%" is not installed.
+    echo [%r%^^!%w%] "!pkg!" is not installed.
     pause >nul
     goto appmgr_debloat_input
 )
 echo.
-echo  About to remove: %pkg%
+echo  About to remove: !pkg!
 echo    [Y] Remove    [N] Cancel
 choice /c:YN /n >nul
 if errorlevel 2 goto appmgr
-adb shell pm uninstall -k --user 0 %pkg% <nul
+adb shell pm uninstall -k --user 0 !pkg! <nul
 echo.
 echo Done. To bring it back: App Manager -^> Restore (or a factory reset).
 pause >nul
@@ -5906,14 +6082,20 @@ echo  Works as long as it was removed with -k and not fully wiped.
 echo.
 set "pkg=" & set /p pkg="Package name to restore (blank = cancel) >> "
 if "!pkg!"=="" goto appmgr
-adb shell cmd package install-existing %pkg% <nul
+set "_PKGCHK=!pkg!"
+call :_pkg_ok || (
+    echo  [%r%x%w%] Invalid package name. Letters, digits, dots and underscores only.
+    timeout /t 2 /nobreak > nul
+    goto appmgr
+)
+adb shell cmd package install-existing !pkg! <nul
 echo.
-adb shell pm list packages 2>nul <nul | findstr /C:"package:%pkg%" >nul
+adb shell pm list packages 2>nul <nul | findstr /C:"package:!pkg!" >nul
 if errorlevel 1 (
-    echo [%r%^^!%w%] Restore did not land - "%pkg%" is not installed for this user.
+    echo [%r%^^!%w%] Restore did not land - "!pkg!" is not installed for this user.
     echo      It may never have been a system/preloaded package, or the APK is gone.
 ) else (
-    echo [%g%+%w%] %pkg% is present for the current user.
+    echo [%g%+%w%] !pkg! is present for the current user.
 )
 pause >nul
 goto appmgr
@@ -6041,7 +6223,6 @@ echo.
 echo Done.
 pause >nul
 goto appmgr_suggest
-
 :: ===================================================================
 :: NEW: Tweaks and Settings  (main menu 14)
 ::
@@ -6391,6 +6572,7 @@ set "EXP_FLT=!EXP_FLT:"=!"
 if not defined EXP_FLT goto tw_exp_list_go
 call :_tw_safechk EXP_FLT || goto tw_exp_bad
 echo(!EXP_FLT!| findstr /r /x /c:"[a-zA-Z0-9_.-][a-zA-Z0-9_.-]*" >nul || goto tw_exp_bad
+
 :tw_exp_list_go
 echo  ---- %EXP_NS% ----
 if defined EXP_FLT (
@@ -6477,7 +6659,6 @@ goto tw_explorer
 echo [%r%^^!%w%] Not allowed - stick to letters, digits and _ . , : / = + -
 timeout /t 2 /nobreak >nul
 goto tw_explorer
-
 :: -------------------------------------------------------------------
 :: Explorer helpers
 ::
@@ -6689,7 +6870,6 @@ set "sd=" & set /p sd="Choose An Option >> "
 if "!sd!"=="1" (start "" notepad "%DIFFOUT%" & goto tw_snapshot)
 if "!sd!"=="2" goto tw_snapshot
 goto tw_snapshot
-
 :: ===================================================================
 :: NEW (Tier 2): icon blacklist, demo mode, heads-up, font scale,
 :: long-press timeout, stay-awake, night modes, profiles.
@@ -6808,6 +6988,7 @@ for %%t in (!IBCUR!) do (
     for %%u in (!IBTOK!) do if /i "%%t"=="%%u" set "IBHIT=1"
     if not defined IBHIT set "IBNEW=!IBNEW!,%%t"
 )
+
 :_tw_ib_addput
 set "IBNEW=!IBNEW!,!IBTOK!"
 set "IBNEW=!IBNEW:~1!"
@@ -6924,7 +7105,7 @@ set "FSNEW=" & set /p FSNEW="Value (blank = cancel) >> "
 if not defined FSNEW goto tw_font
 set "FSNEW=!FSNEW:"=!"
 if not defined FSNEW goto tw_font
-:: Russian-locale comma decimal (1,15) normalizes to a dot before it can
+:: Cyrillic-locale comma decimal (1,15) normalizes to a dot before it can
 :: reach adb - same guard as Optimize > Animation Speed.
 set "FSNEW=!FSNEW:,=.!"
 echo(!FSNEW!| findstr /r /x /c:"0\.[5-9][0-9]*" /c:"\.[5-9][0-9]*" /c:"1" /c:"1\.[0-9][0-9]*" /c:"2" /c:"2\.0*" >nul || goto tw_font_bad
@@ -7177,7 +7358,6 @@ goto tw_demo
 echo [%r%^^!%w%] Invalid time. Four digits, HHMM, e.g. 0930 or 1200.
 timeout /t 2 /nobreak >nul
 goto tw_demo_clock
-
 :: -------------------------------------------------------------------
 :: Profiles - the Windows-side answer to SetEdit's on-device boot queue
 :: (setedit/boot/BootUtils.java). A profile is a plain text file, so it
@@ -7307,9 +7487,11 @@ if /i "!PVAL!"=="null" goto _tw_prof_del
 call :_tw_safechk PVAL || goto _tw_prof_skip
 >>"%~3" echo %~1^|%~2^|!PVAL!
 exit /b
+
 :_tw_prof_del
 >>"%~3" echo %~1^|%~2^|DELETE
 exit /b
+
 :_tw_prof_skip
 >>"%~3" echo # %~1^|%~2 skipped - value holds a character DCX will not round-trip
 exit /b
@@ -7370,6 +7552,7 @@ if /i "!PNS!"=="secure" goto _tw_pa_ns_ok
 if /i "!PNS!"=="global" goto _tw_pa_ns_ok
 echo    skip - unknown namespace: !PNS!
 exit /b
+
 :_tw_pa_ns_ok
 echo(!PKEY!| findstr /r /x /c:"[a-zA-Z0-9_.-][a-zA-Z0-9_.-]*" >nul || goto _tw_pa_badkey
 if /i "!PVAL!"=="DELETE" goto _tw_pa_del
@@ -7382,18 +7565,20 @@ set "_sv=!PVAL:'='\''!"
 adb shell "settings put !PNS! !PKEY! '!_sv!'" <nul >nul
 echo    put    !PNS! !PKEY! = !PVAL!
 exit /b
+
 :_tw_pa_del
 call :_tw_undo_add !PNS! !PKEY!
 adb shell settings delete !PNS! !PKEY! >nul 2>&1 <nul
 echo    delete !PNS! !PKEY!
 exit /b
+
 :_tw_pa_badkey
 echo    skip - bad key name: !PKEY!
 exit /b
+
 :_tw_pa_badval
 echo    skip - bad or unsafe value for !PKEY!
 exit /b
-
 :: ===================================================================
 :: NEW (Tier 3): QS tile editor + assorted device tweaks.
 ::
@@ -7516,6 +7701,7 @@ set "QSNEW="
 if "!QSCUR!"=="null" goto _tw_qs_addput
 call :_tw_qs_enum
 call :_tw_qs_rebuild_skip
+
 :_tw_qs_addput
 if /i "!QSPOS!"=="front" (set "QSNEW=,!QSTOK!!QSNEW!") else (set "QSNEW=!QSNEW!,!QSTOK!")
 set "QSNEW=!QSNEW:~1!"
@@ -7549,6 +7735,22 @@ set "QSNEW=!QSNEW:~1!"
 call :_tw_qs_put
 goto tw_qs
 
+:_pkg_ok
+:: Validates !_PKGCHK! as an Android package name; errorlevel 1 if it is not one.
+::
+:: Why this exists. A package name is free text the user types, and it used to reach
+:: "adb shell ... %pkg%" through IMMEDIATE expansion - so a name containing & | < > was
+:: parsed by cmd as an OPERATOR rather than passed as data, and the line broke or ran
+:: something else. Every use is now delayed (!pkg!), which makes those characters literal.
+:: This check is the other half: it keeps anything that is not a real package name from
+:: reaching adb at all, and it runs BEFORE the "is it installed" probe - because that probe
+:: expands the value too, so it could never have protected the thing it was checking.
+::
+:: Android package names are Java-style: a letter first, then letters, digits, dots and
+:: underscores. Same echo(/findstr idiom the QS index check already uses.
+echo(!_PKGCHK!| findstr /r /x /c:"[a-zA-Z][a-zA-Z0-9_.]*" >nul
+exit /b
+
 :_tw_qs_enum
 :: Split QSCUR into QST_1..QST_n on commas that are NOT inside (...).
 :: Needed because Huawei/OEM lists embed custom(component/class) tokens.
@@ -7558,6 +7760,12 @@ if not defined QSCUR exit /b
 if /i "!QSCUR!"=="null" exit /b
 set "_qs_tmp=%TEMP%\dcx_qs_tokens.txt"
 powershell -NoProfile -Command "$s=$env:QSCUR; if([string]::IsNullOrEmpty($s)){exit 0}; $d=0; $c=''; $l=New-Object System.Collections.Generic.List[string]; foreach($ch in $s.ToCharArray()){ if($ch -eq [char]'('){$d++} elseif($ch -eq [char]')'){$d--} elseif($ch -eq [char]',' -and $d -eq 0){ [void]$l.Add($c); $c=''; continue }; $c+=$ch }; if($c.Length -gt 0){[void]$l.Add($c)}; $l | Set-Content -LiteralPath $env:_qs_tmp -Encoding ascii"
+:: PowerShell resets the console code page on exit, which turns the box-drawing UI into
+:: "?????" until something sets it back. :setupautorun already restores it after its own
+:: PowerShell block; this path did not, and only got away with it because :logo also runs
+:: chcp and almost every screen redraws through :logo. "Almost" is not a guarantee, so make
+:: it explicit here rather than depend on the caller's redraw path.
+chcp 65001 >nul
 if not exist "%_qs_tmp%" exit /b
 for /f "usebackq delims=" %%t in ("%_qs_tmp%") do (
     set /a QSN+=1
@@ -7885,7 +8093,6 @@ if "!il!"=="3" (call :_tw_undo_add global default_install_location & adb shell s
 if "!il!"=="4" (call :_tw_undo_add global default_install_location & adb shell settings delete global default_install_location >nul 2>&1 <nul & goto tw_inst)
 if "!il!"=="5" goto tw_more
 goto tw_inst
-
 :: ===================================================================
 :: Settings Tools (main menu 15) - generic tooling over the whole
 :: settings provider, split out of the Tweaks hub. Tweaks is the
@@ -7917,6 +8124,7 @@ echo  Watching %g%!WATCH_NS!/!WATCH_KEY!%w%
 echo  Baseline: "!WATCH_PREV!"
 echo  Flip the toggle on the device now...
 echo.
+
 :_tw_watch_loop
 :: Q=quit (errorlevel 1), C=continue/timeout default (errorlevel 2+)
 choice /c:QC /n /t 1 /d C >nul
@@ -7924,6 +8132,7 @@ if errorlevel 2 goto _tw_watch_poll
 echo  Stopped.
 pause >nul
 goto settools
+
 :_tw_watch_poll
 set "WATCH_NOW="
 for /f "delims=" %%i in ('adb shell settings get !WATCH_NS! !WATCH_KEY! 2^>nul ^<nul') do set "WATCH_NOW=%%i"
@@ -8089,7 +8298,6 @@ if "!_sv_got!"=="%~3" (echo [%g%+%w%] %~2 = "!_sv_got!" & set /a DCX_VOK+=1 & ex
 echo [%r%^^!%w%] wanted %~2=%~3, device reports "!_sv_got!".
 set /a DCX_VFAIL+=1
 exit /b 1
-
 :: ===================================================================
 :: SHARED HELPER: :_dcfgsync_verify  expected
 :: Read back device_config get_sync_disabled_for_tests after a Tweaks write.
@@ -8105,7 +8313,6 @@ if /i "!_ds!"=="%~1" (
     echo [%y%WARN%w%] wanted sync mode %~1, device reports "!_ds!" - may need root on Android 14+.
 )
 exit /b
-
 :: ===================================================================
 :: SHARED HELPER: :_dcfg_verify  namespace  key  expected
 :: Same idea for device_config get/put. On Android 14+ without root a
@@ -8119,7 +8326,6 @@ if "!_dv_got!"=="%~3" (echo [%g%+%w%] %~1/%~2 = "!_dv_got!" & set /a DCX_VOK+=1 
 echo [%r%^^!%w%] wanted %~1/%~2=%~3, device reports "!_dv_got!".
 set /a DCX_VFAIL+=1
 exit /b 1
-
 :: ===================================================================
 :: SHARED HELPER: dexopt_all_mode  <filter>  <heavy_flag>
 ::
