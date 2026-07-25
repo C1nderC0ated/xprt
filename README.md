@@ -57,7 +57,9 @@ DCX neo is a community tool, not affiliated with Google or any manufacturer.
 
 ## First run
 
-On startup DCX neo sets up ANSI colours, verifies ADB, and waits up to 10 s for
+On startup DCX neo sets up ANSI colours, verifies ADB, waits up to 10 s for
+an authorised device, and — if more than one is attached — asks which one to
+target
 an authorised device — if none appears you can jump straight to **[W] Wireless
 ADB setup** or **[R]etry** instead of exiting. It then prints your device model
 and Android API level, e.g. `Device: Pixel 7   API level: 34`. The Main, Gaming,
@@ -374,7 +376,7 @@ App-level controls (background restriction + debloat), main menu **14**. **Every
 |---|---|---|
 | 1 | **Restrict app background** | Deny `RUN_IN_BACKGROUND` for a package you name (stops it running in the background; saves battery). |
 | 2 | **Allow app background** | Undo the above for a package. |
-| 3 | **Debloat by package name** | Remove an app for the current user (`pm uninstall -k --user 0`). Validated + confirmed; data kept. |
+| 3 | **Debloat by package name** | Remove an app for the current user (`pm uninstall -k --user 0`). The name is checked against the Android package-name charset (a letter, then letters/digits/dots/underscores) *before* anything runs, then checked to be installed, then confirmed; data kept. |
 | 4 | **Suggested bloatware** | Auto-detects your brand and lists only **vetted, safe-to-remove** packages that are **actually installed** (cross-vendor Facebook, optional Google apps, plus Xiaomi / Transsion / Samsung / Huawei sets). |
 | 5 | **List installed packages** | Dump all packages — or user/updated apps (`-3`) where bloat usually lives — to Notepad. |
 | 6 | **Restore a removed app** | Bring a debloated app back (`pm install-existing`). |
@@ -411,8 +413,22 @@ Run DCX over Wi-Fi with no cable. Reachable from the main menu (**13**) or from 
 | 4 | **Disconnect** | Drop all Wi-Fi connections (USB unaffected). |
 | 5 | **Back to USB** | `adb usb` for devices switched with option 3. |
 | 6 | **Help** | Where to find the ports/code, per-version notes (incl. Huawei EMUI/HarmonyOS builds that hide the pairing dialog — option 3 works there). |
+| 7 | **Select target device** | Pick which attached device DCX talks to when more than one is present. Sets `ANDROID_SERIAL`, so every later adb call follows without any `-s` flags. |
+| 8 | **Back** | — |
 
 > **Security note:** while Wireless debugging is on, any PC paired with the phone on the same network can run adb commands. Turn it off when done.
+
+> **More than one device attached?** adb refuses to act when it cannot tell which device
+> you mean — every command fails with *more than one device/emulator*. DCX now picks a
+> target instead of walking into that: on startup, and again whenever this menu changes the
+> connection list, it enumerates the authorised devices and sets `ANDROID_SERIAL` to the one
+> you choose. One device is selected silently; two or more get a picker that labels each
+> entry **USB** or **Wi-Fi**. The header then shows which transport is in use.
+>
+> This matters most for a case DCX creates itself: **Enable over USB** runs `adb tcpip 5555`
+> and connects over Wi-Fi *while the cable is still attached*, so the same phone appears
+> twice — once by USB serial, once as `ip:5555`. Either entry works; the picker just makes
+> you say which. Pull the cable, or use **Disconnect**, if you would rather have one.
 
 The old standalone `wirelessadb.bat` is **removed** — this menu replaces it
 (that script only did `adb connect`, with no Android 11+ pairing support).
@@ -525,7 +541,7 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | **A tweak "didn't do anything"** | Read the value back via **CheckSetting** (graphics: `dumpsys gfxinfo <pkg> \| findstr Pipeline`). Some keys need root or a newer Android. |
 | **CheckSetting report or Wake-Lock Audit saved empty / blank** | Fixed — a bare `)` in an echo annotation like `(first 15)` closed the redirected `( … ) > file` block early; annotations are now escaped (same fix covers the background-dexopt failure list). |
 | **CheckSetting/Wake-Lock report shows `can't create nul` / `findstr` errors, or a blank section** | Fixed — the `\| findstr` filtering leaked to the Android shell; it now runs Android-side (`adb shell "… 2>/dev/null \| grep …"`). |
-| **Box characters / logo turn into `?????` after a report or backup (until relaunch)** | Fixed — the timestamp used `powershell Get-Date`, which reset the console code page; it's now built in pure `cmd` from `%date%`/`%time%`. |
+| **Box characters / logo turn into `?????` after a report or backup (until relaunch)** | Fixed — the timestamp used `powershell Get-Date`, which resets the console code page on exit; it's now built in pure `cmd` from `%date%`/`%time%`. The two places that still need PowerShell (SurfaceFlinger Hz math, quick-settings tile tokenizer) each run `chcp 65001` immediately afterwards, so the code page is restored rather than left for the next `:logo` redraw to repair. |
 | **First apply in a menu jumps back without pausing (second time is fine)** | Fixed — an `adb shell` forwards stdin, so `pause` ate a keystroke; every `adb shell` before a pause now reads stdin from `nul` (`<nul`). |
 | **DeviceConfig flags stopped updating after Logs Off / Sync Off** | Fixed — `set_sync_disabled_for_tests persistent` was a silent side effect of those toggles. It now lives only under **Tweaks → DeviceConfig server sync**; pick **Allow sync (none)** to undo a leftover freeze. |
 | **QS tile Add/Remove crashed or wrecked the list on Huawei/OEM** | Fixed — lists with `custom(pkg/cls)` tokens are split paren-aware and written with shell quoting. |
@@ -546,10 +562,13 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | **Clock seconds / battery percent did nothing** | Heavily skinned status bars (some OneUI, EMUI) don't read the AOSP keys. The key is set; the skin ignores it. Nothing to fix. |
 | **Freeform windows did nothing** | It needs a **reboot** — it's a developer-options key. The screen offers one. |
 | **A profile line was skipped when I applied it** | Deliberate. Profiles are hand-editable, so every line is re-validated: a bad namespace, key or value prints `skip - …` and the rest of the profile still runs. |
+| **A package name with odd characters did something strange, or the window closed** | Fixed — package names are free text, and they used to reach `adb shell … %pkg%` through *immediate* expansion, so a name containing `&`, `|`, `<` or `>` was parsed by cmd as an operator instead of passed as data. Every use is now late-expanded (`!pkg!`), which makes those characters literal, and a charset check runs before the value reaches adb at all. Note the old "is it installed?" probe could never have caught this: that line expanded the value too. |
 | **Backup/undo `.bat` flashes and closes / says `Add was unexpected at this time.`** | Fixed — help text used `1) Add …` inside an `if ( )` block (cmd treated `1)` as the end of the block), and undo lines could land *after* `:dcx_hold` so a double-click exited before any restores. New scripts use `[1]`/`[2]`/`[3]`, put helpers before `:dcx_main`, and always pause unless `/nopause`. Re-run **Backup** or a Tweaks write to regenerate; or use Tweaks → **[14]** on the repaired session undo. |
 | **Running undo/restore from DCX closed the whole DCX window** | Fixed — DCX now launches those scripts with `cmd /c … /nopause` so the child cannot take over (or kill) the menu console. |
 | **Standalone backup/undo can’t find adb / restores nothing** | Fixed — scripts embed DCX’s `adb.exe` path (plus `dcx_adb_path.txt` / PATH). If adb is still missing they print `[ERROR]` and wait. Regenerate under current DCX if an old file still calls bare `adb`. |
 | **Want to undo everything** | **Restore** a backup, or run the undo script a Tweaks/Explorer write left in `dcx_backups\`, or reboot for non-persistent changes. |
+| **Every command says `more than one device/emulator`** | Fixed — DCX now sets `ANDROID_SERIAL` to a device you pick, so adb stops guessing. It asks on startup and after any Wireless-ADB change; you can re-pick any time from **Wireless ADB → [7] Select target device**. The usual cause is *Enable over USB*, which deliberately leaves the phone connected by cable **and** Wi-Fi at once. |
+| **SurfaceFlinger tweak says it could not compute the offsets** | Working as intended. That screen needs PowerShell for the phase-offset arithmetic; if it is unavailable the values would come out empty and get written to `setprop` as blanks. DCX now checks and refuses instead — your current SF properties are left untouched. |
 | **Colours / alignment look wrong** | Use Windows Terminal or a recent `cmd.exe`; very old consoles don't render ANSI colours or box characters. |
 
 ---
