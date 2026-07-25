@@ -5218,7 +5218,7 @@ echo  %y%Note:%w% old Wi-Fi power tweaks were removed (could break Wi-Fi on
 echo  Android 15). Revert still clears any leftovers from an old run.
 echo.
 echo                                     %g%[%w%1%g%]%w% Apply TCP hint (safe)
-echo                                     %g%[%w%2%g%]%w% Set Cloudflare DNS (1.1.1.1)
+echo                                     %g%[%w%2%g%]%w% Private DNS (pick a provider, or your own)
 echo                                     %g%[%w%3%g%]%w% Preferred network mode
 echo                                     %g%[%w%4%g%]%w% Revert (remove all)
 echo                                     %g%[%w%5%g%]%w% Back
@@ -5327,27 +5327,115 @@ echo more than buffer tuning on modern networks.
 pause > nul
 goto netboost
 
+:ShowPrivateDns
+:: Prints what Private DNS is set to right now, before anything offers to change it.
+:: `settings get` returns the literal string "null" for an unset key, which is not the same
+:: as "off" - saying so beats printing a bare null and letting the user guess.
+set "_pdmode=" & set "_pdspec="
+for /f "delims=" %%i in ('adb shell settings get global private_dns_mode 2^>nul ^<nul')      do set "_pdmode=%%i"
+for /f "delims=" %%i in ('adb shell settings get global private_dns_specifier 2^>nul ^<nul') do set "_pdspec=%%i"
+if not defined _pdmode set "_pdmode=null"
+if /i "!_pdmode!"=="null" (
+    echo   Currently: not set - the device is using its default
+) else if /i "!_pdmode!"=="hostname" (
+    if /i "!_pdspec!"=="null" set "_pdspec=none stored"
+    echo   Currently: hostname mode -^> !_pdspec!
+) else (
+    echo   Currently: !_pdmode!
+)
+goto :eof
+
+:_host_ok
+:: Validates !_HCHK! as a DNS-over-TLS hostname; errorlevel 1 if it is not one.
+::
+:: This is free text the user types, on its way into an adb command line - the same shape
+:: that let a package name containing ^& ^| ^< ^> be parsed as an operator instead of passed
+:: as data. Charset first, so no metacharacter survives; every use afterwards is delayed
+:: (!var!) so even that stays literal. The required dot is the correctness half: a DoT
+:: server is a domain name, and catching a single label here beats a confusing failure
+:: from Android two screens later.
+echo(!_HCHK!| findstr /r /x /c:"[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9.-]*" >nul
+exit /b
+
 :netboost_dns
 cls
-title Network Boost : DNS
-echo Setting private DNS to Cloudflare (1.1.1.1 / one.one.one.one)...
+title Network Boost : Private DNS
+call :logo
+echo.
+echo   Private DNS (DNS-over-TLS). Encrypts lookups and applies system-wide, on
+echo   Wi-Fi and mobile data alike. It is a device setting, not a per-app one.
+echo.
+call :ShowPrivateDns
+echo.
+echo                                     %g%[%w%1%g%]%w% Cloudflare   one.one.one.one
+echo                                     %g%[%w%2%g%]%w% Google       dns.google
+echo                                     %g%[%w%3%g%]%w% AdGuard      dns.adguard.com   (blocks ads/trackers)
+echo                                     %g%[%w%4%g%]%w% Quad9        dns.quad9.net     (blocks known-malicious)
+echo                                     %g%[%w%5%g%]%w% Custom hostname
+echo                                     %g%[%w%6%g%]%w% Automatic (device default)
+echo                                     %g%[%w%0%g%]%w% Back
+echo.
+echo   %y%If your network blocks external DNS, lookups can fail entirely.%w%
+echo   Option 6 puts it straight back - you do not need Revert, which also
+echo   removes the TCP and network-mode changes.
+echo.
+set "pd=" & set /p pd="Choose >> "
+if "!pd!"=="1" ( set "_pdhost=one.one.one.one"  & goto _pdns_apply )
+if "!pd!"=="2" ( set "_pdhost=dns.google"       & goto _pdns_apply )
+if "!pd!"=="3" ( set "_pdhost=dns.adguard.com"  & goto _pdns_apply )
+if "!pd!"=="4" ( set "_pdhost=dns.quad9.net"    & goto _pdns_apply )
+if "!pd!"=="5" goto _pdns_custom
+if "!pd!"=="6" goto _pdns_auto
+if "!pd!"=="0" goto netboost
+goto netboost_dns
+
+:_pdns_custom
+echo.
+echo   Enter the DoT hostname your provider gave you - for example dns.nextdns.io
+echo   or a personal resolver. Letters, digits, dots and hyphens only.
+echo.
+set "_pdhost=" & set /p _pdhost="Hostname (blank = cancel) >> "
+if not defined _pdhost goto netboost_dns
+set "_HCHK=!_pdhost!"
+call :_host_ok || (
+    echo.
+    echo  [%r%x%w%] That is not a hostname. Letters, digits, dots and hyphens, and it
+    echo      needs at least one dot - dns.google, not just "google".
+    pause > nul
+    goto netboost_dns
+)
+
+:_pdns_apply
+echo.
+echo Setting Private DNS to !_pdhost! . . .
 adb shell settings put global private_dns_mode hostname <nul
-adb shell settings put global private_dns_specifier one.one.one.one <nul
+adb shell settings put global private_dns_specifier !_pdhost! <nul
 call :_act_reset
 call :_settings_verify global private_dns_mode hostname
-call :_settings_verify global private_dns_specifier one.one.one.one
+call :_settings_verify global private_dns_specifier !_pdhost!
 call :_act_summary
 echo.
-echo  To use Google DNS instead, run manually:
-echo    settings put global private_dns_specifier dns.google
-echo  Or for AdGuard DNS (no ads):
-echo    settings put global private_dns_specifier dns.adguard.com
-echo.
-echo  %y%If your network blocks external DNS and connectivity drops,%w%
-echo  come back to Network Boost -^> Revert to restore automatic DNS.
+call :ShowPrivateDns
 echo.
 pause > nul
-goto netboost
+goto netboost_dns
+
+:_pdns_auto
+:: The DNS half of Revert on its own. Reverting used to be reachable only through
+:: "Revert (remove all)", which also strips the TCP hint, the network mode and the Wi-Fi
+:: keys - so undoing one DNS experiment quietly undid four other things too.
+echo.
+echo Restoring automatic DNS . . .
+adb shell settings put global private_dns_mode opportunistic <nul
+adb shell settings delete global private_dns_specifier <nul
+call :_act_reset
+call :_settings_verify global private_dns_mode opportunistic
+call :_act_summary
+echo.
+call :ShowPrivateDns
+echo.
+pause > nul
+goto netboost_dns
 
 :netboost_revert
 cls
