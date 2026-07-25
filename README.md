@@ -47,8 +47,7 @@ DCX neo is a community tool, not affiliated with Google or any manufacturer.
 
 1. **Install ADB** — download **Android SDK Platform Tools** from Google, then
    add it to your `PATH`, or drop `adb.exe` (and its DLLs) into an `adb\`
-   folder next to `DCX.bat` (the Release already contains one; DCX `cd`s into
-   it automatically).
+   folder next to `DCX.bat` (the Release already contains one; DCX `cd`s into it automatically).
 2. **Enable USB debugging** — Settings → About phone → tap **Build number**
    ×7 → Developer options → **USB debugging**. Connect and tap **Allow** on the RSA prompt.
 3. **Run** `DCX.bat` (double-click or from `cmd`).
@@ -58,8 +57,7 @@ DCX neo is a community tool, not affiliated with Google or any manufacturer.
 ## First run
 
 On startup DCX neo sets up ANSI colours, verifies ADB, waits up to 10 s for
-an authorised device, and — if more than one is attached — asks which one to
-target
+an authorised device, and — if more than one is attached — asks which one to target
 an authorised device — if none appears you can jump straight to **[W] Wireless
 ADB setup** or **[R]etry** instead of exiting. It then prints your device model
 and Android API level, e.g. `Device: Pixel 7   API level: 34`. The Main, Gaming,
@@ -99,7 +97,7 @@ Battery and Optimize screens show a live header with **uptime** and **CPU load**
 | 3 | **Toggle Package Verifier** | Play Protect package verification on/off. |
 | 4 | **Toggle Game-Overlay** | Game Manager downscale + optional `game_overlay` DeviceConfig (14+ may need root). |
 | 5 | **Performance props (debug/OEM dump)** | Large dump of debug/OEM `setprop`s — volatile and mixed; not a guaranteed FPS mode. Lasting bits are mainly `low_power` off + thermal reset. |
-| 6 | **TCP / DNS / network mode** | TCP receive-window hint, optional private DNS (Cloudflare), preferred network mode (LTE/5G), full revert. ⚠️ see below. Modest effect — not a magic latency boost. |
+| 6 | **TCP / DNS / network mode** | TCP receive-window hint, **Private DNS** (Cloudflare / Google / AdGuard / Quad9 / your own DoT hostname / back to automatic), preferred network mode (LTE/5G), full revert. ⚠️ see below. |
 | 7 | **GPU Renderer** | Switch HWUI renderer: `skiagl` (default) / `skiavk` (Skia Vulkan) / clear. |
 | 8 | **Force ANGLE for All Apps** | Route all GLES apps through ANGLE. ⚠️ see below. |
 | 9 | **Display Scaler** | Lower render resolution + matching DPI (`wm size` / `wm density`) for more GPU headroom and lower power. Safe presets are computed live from the panel's native resolution (85 / 75 / 67 / 50 %), plus custom and one-tap reset. A separate **UI size (DPI-only)** mode changes element size without touching resolution — a stand-in for the **Smallest width** developer option that some OEMs (e.g. Huawei EMUI/HarmonyOS) disable. Reversible, no root, persists across reboot; **included in Backup/Restore** (override or `wm size`/`wm density` reset). |
@@ -289,8 +287,7 @@ including every [Tweaks](#tweaks) key and the main Battery/Gaming switches
 (not every Logs Off metric key) — and writes a **stand-alone restore
 `.bat`** to `%USERPROFILE%\dcx_backups\dcx_backup_<timestamp>.bat`.
 
-**ADB path:** those `.bat` files live under `%USERPROFILE%\dcx_backups` — *not*
-next to DCX’s local `adb\` folder. New backup/undo scripts:
+**ADB path:** those `.bat` files live under `%USERPROFILE%\dcx_backups` — *not* next to DCX’s local `adb\` folder. New backup/undo scripts:
 
 - **Embed** the full `adb.exe` path DCX was using, also write
   `%USERPROFILE%\dcx_backups\dcx_adb_path.txt`, and fall back to `PATH`.
@@ -355,8 +352,7 @@ which covers backup files made before this existed. Restoring twice is harmless.
 Because it's a normal batch file you can run it directly without DCX neo (double-click 
 holds the window until you press a key), edit out lines you don't want, or share it to 
 reproduce settings elsewhere. **Restore** lists backups (newest first), confirms, then 
-applies the chosen one with `/nopause` so DCX stays open. Both can open the backups folder 
-in Explorer.
+applies the chosen one with `/nopause` so DCX stays open. Both can open the backups folder in Explorer.
 
 ---
 
@@ -552,6 +548,7 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | **A restore said it worked when it didn't / partially failed** | Fixed — restore is a long run of ADB writes, and if the cable is pulled, wireless ADB drops or authorisation expires part-way, the rest silently no-op. It used to print *Restore complete.* regardless, leaving a half-restored device you believed was fine. Backup files now count what actually landed and report `[OK] n restored` or `[WARN] n restored, m FAILED` with the failures listed; DCX prevents adb quote-stripping, which prevents partial failure, and also re-checks the device is still connected afterwards, which catches the disconnect case for backup files made before this change. Restoring twice is harmless. |
 | **Clear Last Used / Log for user apps took ~30 seconds** | Fixed — those three actions ran one `adb shell` per package, and on a 269-package device that's ~27 s of pure USB round-trip for work the phone finishes in milliseconds. They now run the loop inside a single device shell session: same packages, same per-package progress lines, without the transport cost. Clear Last Used also pauses before returning to Optimize so a leftover keystroke can't skip the menu prompt. |
 | **Most apps crash after enabling ANGLE** | Common on non-Pixel GPUs; **a reboot won't help** (it persists). Gaming → Force ANGLE → **Disable**/**Delete**. |
+| **Name lookups stopped working after setting Private DNS** | Some networks (hotel/captive portals, some corporate Wi-Fi, a few mobile carriers) block outbound DNS-over-TLS, and Android then fails lookups rather than falling back. Gaming → **TCP / DNS / network mode** → **Private DNS** → **Automatic (device default)** puts it straight back. That option exists on its own precisely so you don't have to use **Revert**, which would also drop the TCP hint and network mode. |
 | **Wi-Fi died after TCP / DNS / network mode (old Network Boost)** | Gaming → **TCP / DNS / network mode** → **Revert** (clears any old Wi-Fi keys). |
 | **ART Service printed a wall of text** | Not errors — older versions dumped a line per package. Current builds show a summary (optimised/failed) and only real failures; a few failures are normal. |
 | **"Unknown option: --compile-layouts" / "Unknown command"** | Expected on Android 12+ (removed; gone on 14+ under ART Service). DCX neo skips it automatically and continues. |
@@ -587,5 +584,5 @@ DCX is provided **as-is, with no warranty**. You are responsible for any changes
 This project's source code is licensed under the **GNU GPLv3**.
 
 Exception: the image file [4152900.jpg] is excluded from the GPL-3.0 license.
-It is owned by its respective creator and is included strictly for personal,
-non-commercial display. If you fork or reuse this project, you must remove or replace this image.
+It is owned by its respective creator and is included strictly for personal, non-commercial display. 
+If you fork or reuse this project, you must remove or replace this image.
