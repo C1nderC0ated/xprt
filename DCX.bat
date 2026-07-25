@@ -2480,7 +2480,13 @@ for %%m in (speed speed-profile verify quicken everything everything-profile) do
     if /i "!mode!"=="%%m" set "modeok=1"
 )
 if "%modeok%"=="0" (
-    echo [%r%^^!%w%] Invalid mode. Use one of: speed, speed-profile, verify, quicken, everything.
+:: The accepted set lives in THREE places - the "Valid modes" line above, the for-loop
+:: whitelist, and this error - and they have to say the same thing. This one used to list
+:: five of the six, silently dropping everything-profile, so a user who typo'd was told an
+:: option existed less than it did. The loop is the source of truth; keep both texts equal
+:: to it whenever a mode is added or removed.
+    echo [%r%^^!%w%] Invalid mode. Use one of: speed, speed-profile, verify, quicken,
+    echo     everything, everything-profile.
     pause > nul
     goto Optimize
 )
