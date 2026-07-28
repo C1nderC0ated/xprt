@@ -196,7 +196,7 @@ exit /b 0
 set "_hdr_suffix="
 if not defined ANDROID_SERIAL exit /b
 set "_hdr_suffix=   via USB"
-echo(!ANDROID_SERIAL!| findstr /c:":" >nul && set "_hdr_suffix=   via Wi-Fi"
+if not "!ANDROID_SERIAL!"=="!ANDROID_SERIAL::=!" set "_hdr_suffix=   via Wi-Fi"
 exit /b
 
 :_pd_row
@@ -972,9 +972,11 @@ echo  code and port stop working the moment it closes.
 echo.
 set "WIP=" & set /p WIP="Pairing ip:port (blank = cancel) >> "
 if "!WIP!"=="" goto wirelessadb
+call :_tw_safechk WIP || goto wadb_pair_bad
 echo !WIP!| findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*:[0-9][0-9]*$" >nul || goto wadb_pair_bad
 set "WCODE=" & set /p WCODE="6-digit pairing code (blank = cancel) >> "
 if "!WCODE!"=="" goto wirelessadb
+call :_tw_safechk WCODE || goto wadb_pair_bad
 echo !WCODE!| findstr /r "^[0-9][0-9][0-9][0-9][0-9][0-9]$" >nul || goto wadb_pair_bad
 echo.
 adb pair !WIP! !WCODE!
@@ -1003,6 +1005,7 @@ echo.
 set "WIP=" & set /p WIP="ip[:port] (blank = cancel) >> "
 if "!WIP!"=="" goto wirelessadb
 if "!WIP!"=="!WIP::=!" set "WIP=!WIP!:5555"
+call :_tw_safechk WIP || goto wadb_connect_bad
 echo !WIP!| findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*:[0-9][0-9]*$" >nul || goto wadb_connect_bad
 echo.
 adb connect !WIP!
@@ -1385,6 +1388,7 @@ for /f "tokens=2 delims=:=" %%i in ('adb shell "dumpsys SurfaceFlinger 2>/dev/nu
 if defined refresh_rate set "refresh_rate=!refresh_rate: Hz=!"
 if defined refresh_rate set "refresh_rate=!refresh_rate:Hz=!"
 if defined refresh_rate set "refresh_rate=!refresh_rate: =!"
+call :_tw_safechk refresh_rate || set "refresh_rate="
 echo(!refresh_rate!| findstr /r /x /c:"[0-9][0-9]*\.*[0-9]*" >nul || set "refresh_rate="
 if not defined refresh_rate (
     echo [%r%^^!%w%] Could not detect refresh rate. Auto setup cannot continue.
@@ -1745,6 +1749,7 @@ if "!asv!"=="" goto animspeed
 :: a comma decimal (1,5 -> 1.5), then gate to the documented 0-2 range
 :: (accepts 0, 1, 2, 0.75, .5, 2.0 and the like).
 set "asv=!asv:,=.!"
+call :_tw_safechk asv || goto animspeed_custom_bad
 echo !asv!| findstr /r /x /c:"[0-2]" /c:"[01]\.[0-9][0-9]*" /c:"2\.0*" /c:"\.[0-9][0-9]*" >nul || goto animspeed_custom_bad
 goto animspeed_apply
 
@@ -2523,19 +2528,19 @@ echo.
 :: (some OEMs ship important apps as user-installed APKs)
 set "PROTECT=com.android.systemui com.google.android.inputmethod.latin com.android.inputmethod.latin com.android.vending"
 for /f "tokens=2 delims=:" %%a in ('adb shell pm list package -3 ^<nul') do (
-    set "PKG=%%a"
+    set "PKGUSER=%%a"
     set "SKIP=0"
     if defined FG_PKG (
-        if "!PKG!"=="!FG_PKG!" set "SKIP=1"
+        if "!PKGUSER!"=="!FG_PKG!" set "SKIP=1"
     )
     for %%p in (%PROTECT%) do (
-        if "!PKG!"=="%%p" set "SKIP=1"
+        if "!PKGUSER!"=="%%p" set "SKIP=1"
     )
     if "!SKIP!"=="1" (
-        echo Skip  !PKG!  ^(protected^)
+        echo Skip  !PKGUSER!  ^(protected^)
     ) else (
-        echo Kill  !PKG!
-        adb shell am force-stop !PKG! <nul > nul 2>&1
+        echo Kill  !PKGUSER!
+        adb shell am force-stop !PKGUSER! <nul > nul 2>&1
     )
 )
 adb shell am kill-all <nul > nul 2>&1
@@ -5010,8 +5015,11 @@ set /p "CH=Height (blank = cancel) >> "
 if "!CH!"=="" goto dispscaler
 set "CDPI=" & set /p "CDPI=Density dpi (blank = cancel) >> "
 if "!CDPI!"=="" goto dispscaler
+call :_tw_safechk CW || goto dispscaler_custom_bad
 echo !CW!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
+call :_tw_safechk CH || goto dispscaler_custom_bad
 echo !CH!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
+call :_tw_safechk CDPI || goto dispscaler_custom_bad
 echo !CDPI!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
 :: sane bounds so a typo can't leave the UI unusable
 if %CW% LSS 320 goto dispscaler_custom_bad
@@ -5045,6 +5053,7 @@ for /f "tokens=2 delims=:" %%a in ('adb shell wm density ^<nul 2^>nul ^| findstr
 for /f "tokens=* delims= " %%a in ("%PDR%") do set "PD=%%a"
 for /f "tokens=2 delims=:" %%a in ('adb shell wm density ^<nul 2^>nul ^| findstr /C:"Override density"') do set "OVRD=%%a"
 if not defined PD goto dispscaler_err
+call :_tw_safechk PD || goto dispscaler_err
 echo !PD!| findstr /r "[^0-9]" >nul && goto dispscaler_err
 set /a U110=PD*110/100, U90=PD*90/100, U85=PD*85/100, U80=PD*80/100
 echo.
@@ -5112,6 +5121,7 @@ echo.
 set "CDPI="
 set /p "CDPI=Density dpi (blank = cancel) >> "
 if "!CDPI!"=="" goto dispscaler_dpi
+call :_tw_safechk CDPI || goto dispscaler_dpi_custom_bad
 echo !CDPI!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_dpi_custom_bad
 if %CDPI% LSS 80 goto dispscaler_dpi_custom_bad
 if %CDPI% GTR 900 goto dispscaler_dpi_custom_bad
@@ -5528,14 +5538,14 @@ echo   %y%If your network blocks external DNS, lookups can fail entirely.%w%
 echo   Option 6 puts it straight back - you do not need Revert, which also
 echo   removes the TCP and network-mode changes.
 echo.
-set "pd=" & set /p pd="Choose >> "
-if "!pd!"=="1" ( set "_pdhost=one.one.one.one"  & goto _pdns_apply )
-if "!pd!"=="2" ( set "_pdhost=dns.google"       & goto _pdns_apply )
-if "!pd!"=="3" ( set "_pdhost=dns.adguard.com"  & goto _pdns_apply )
-if "!pd!"=="4" ( set "_pdhost=dns.quad9.net"    & goto _pdns_apply )
-if "!pd!"=="5" goto _pdns_custom
-if "!pd!"=="6" goto _pdns_auto
-if "!pd!"=="0" goto netboost
+set "PDLIST=" & set /p PDLIST="Choose >> "
+if "!PDLIST!"=="1" ( set "_pdhost=one.one.one.one"  & goto _pdns_apply )
+if "!PDLIST!"=="2" ( set "_pdhost=dns.google"       & goto _pdns_apply )
+if "!PDLIST!"=="3" ( set "_pdhost=dns.adguard.com"  & goto _pdns_apply )
+if "!PDLIST!"=="4" ( set "_pdhost=dns.quad9.net"    & goto _pdns_apply )
+if "!PDLIST!"=="5" goto _pdns_custom
+if "!PDLIST!"=="6" goto _pdns_auto
+if "!PDLIST!"=="0" goto netboost
 goto netboost_dns
 
 :_pdns_custom
@@ -6240,8 +6250,8 @@ echo.
 set "_ao="
 for /f "delims=" %%i in ('adb shell cmd appops get !pkg! RUN_IN_BACKGROUND 2^>nul ^<nul') do set "_ao=%%i"
 echo  Device reports: !_ao!
-echo(!_ao!| findstr /I /C:"deny" >nul
-if errorlevel 1 (echo [%r%^^!%w%] Restrict may not have landed.) else (echo [%g%+%w%] Background denied for !pkg!.)
+set "_aoq=!_ao:deny=!"
+if "!_aoq!"=="!_ao!" (echo [%r%^^!%w%] Restrict may not have landed.) else (echo [%g%+%w%] Background denied for !pkg!.)
 pause >nul
 goto appmgr
 
@@ -6270,8 +6280,8 @@ echo.
 set "_ao="
 for /f "delims=" %%i in ('adb shell cmd appops get !pkg! RUN_IN_BACKGROUND 2^>nul ^<nul') do set "_ao=%%i"
 echo  Device reports: !_ao!
-echo(!_ao!| findstr /I /C:"allow" >nul
-if errorlevel 1 (echo [%r%^^!%w%] Allow may not have landed.) else (echo [%g%+%w%] Background allowed for !pkg!.)
+set "_aoq=!_ao:allow=!"
+if "!_aoq!"=="!_ao!" (echo [%r%^^!%w%] Allow may not have landed.) else (echo [%g%+%w%] Background allowed for !pkg!.)
 pause >nul
 goto appmgr
 :: ===================================================================
@@ -6974,6 +6984,13 @@ if not "!%~1:&=_!"=="!%~1!" exit /b 1
 if not "!%~1:|=_!"=="!%~1!" exit /b 1
 if not "!%~1:<=_!"=="!%~1!" exit /b 1
 if not "!%~1:>=_!"=="!%~1!" exit /b 1
+:: A double quote needs a different shape: it cannot sit inside the quoted comparison
+:: above without ending it, so strip-and-compare through a temp instead. It matters as
+:: much as the operators - "1.1.1.1^"" puts the pipe INSIDE a quoted region, so findstr
+:: never runs, echo succeeds, the || branch is skipped and the bad value is accepted.
+set "_twq=!%~1!"
+set _twz=!_twq:"=!
+if not "!_twz!"=="!_twq!" exit /b 1
 exit /b 0
 
 :_tw_undo_ensure
@@ -8247,14 +8264,14 @@ echo    %g%[%w%3%g%]%w% Vibration off
 echo    %g%[%w%4%g%]%w% Vibration on
 echo    %g%[%w%5%g%]%w% Reset both to device default
 echo    %g%[%w%6%g%]%w% Back
-set "ch=" & set /p ch="Choose An Option >> "
-if not defined ch goto tw_chg
-if "!ch!"=="1" (call :_tw_undo_add global charging_sounds_enabled & adb shell settings put global charging_sounds_enabled 0 <nul & goto tw_chg)
-if "!ch!"=="2" (call :_tw_undo_add global charging_sounds_enabled & adb shell settings put global charging_sounds_enabled 1 <nul & goto tw_chg)
-if "!ch!"=="3" (call :_tw_undo_add global charging_vibration_enabled & adb shell settings put global charging_vibration_enabled 0 <nul & goto tw_chg)
-if "!ch!"=="4" (call :_tw_undo_add global charging_vibration_enabled & adb shell settings put global charging_vibration_enabled 1 <nul & goto tw_chg)
-if "!ch!"=="5" goto tw_chg_reset
-if "!ch!"=="6" goto tw_more
+set "CHTOK=" & set /p CHTOK="Choose An Option >> "
+if not defined CHTOK goto tw_chg
+if "!CHTOK!"=="1" (call :_tw_undo_add global charging_sounds_enabled & adb shell settings put global charging_sounds_enabled 0 <nul & goto tw_chg)
+if "!CHTOK!"=="2" (call :_tw_undo_add global charging_sounds_enabled & adb shell settings put global charging_sounds_enabled 1 <nul & goto tw_chg)
+if "!CHTOK!"=="3" (call :_tw_undo_add global charging_vibration_enabled & adb shell settings put global charging_vibration_enabled 0 <nul & goto tw_chg)
+if "!CHTOK!"=="4" (call :_tw_undo_add global charging_vibration_enabled & adb shell settings put global charging_vibration_enabled 1 <nul & goto tw_chg)
+if "!CHTOK!"=="5" goto tw_chg_reset
+if "!CHTOK!"=="6" goto tw_more
 goto tw_chg
 
 :tw_chg_reset
@@ -8333,16 +8350,16 @@ echo    %g%[%w%5%g%]%w% 50%%
 echo    %g%[%w%6%g%]%w% Custom (0 - 99)
 echo    %g%[%w%7%g%]%w% Reset to device default (delete key)
 echo    %g%[%w%8%g%]%w% Back
-set "bsv=" & set /p bsv="Choose An Option >> "
-if not defined bsv goto tw_bsav
-if "!bsv!"=="1" (set "BSNEW=0" & goto tw_bsav_apply)
-if "!bsv!"=="2" (set "BSNEW=5" & goto tw_bsav_apply)
-if "!bsv!"=="3" (set "BSNEW=15" & goto tw_bsav_apply)
-if "!bsv!"=="4" (set "BSNEW=30" & goto tw_bsav_apply)
-if "!bsv!"=="5" (set "BSNEW=50" & goto tw_bsav_apply)
-if "!bsv!"=="6" goto tw_bsav_custom
-if "!bsv!"=="7" (call :_tw_undo_add global low_power_trigger_level & adb shell settings delete global low_power_trigger_level >nul 2>&1 <nul & goto tw_bsav)
-if "!bsv!"=="8" goto tw_more
+set "BSVPICK=" & set /p BSVPICK="Choose An Option >> "
+if not defined BSVPICK goto tw_bsav
+if "!BSVPICK!"=="1" (set "BSNEW=0" & goto tw_bsav_apply)
+if "!BSVPICK!"=="2" (set "BSNEW=5" & goto tw_bsav_apply)
+if "!BSVPICK!"=="3" (set "BSNEW=15" & goto tw_bsav_apply)
+if "!BSVPICK!"=="4" (set "BSNEW=30" & goto tw_bsav_apply)
+if "!BSVPICK!"=="5" (set "BSNEW=50" & goto tw_bsav_apply)
+if "!BSVPICK!"=="6" goto tw_bsav_custom
+if "!BSVPICK!"=="7" (call :_tw_undo_add global low_power_trigger_level & adb shell settings delete global low_power_trigger_level >nul 2>&1 <nul & goto tw_bsav)
+if "!BSVPICK!"=="8" goto tw_more
 goto tw_bsav
 
 :tw_bsav_custom
