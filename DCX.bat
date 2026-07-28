@@ -101,6 +101,11 @@ rem  A device answered - now decide WHICH one, before any adb shell runs. With t
 rem  attached (phone + tablet, an emulator, or the USB/Wi-Fi pair "Enable over USB"
 rem  creates) every call below would otherwise fail with "more than one device".
 call :pick_device
+rem  MUST jump over :pick_device. Without this the routine is entered a SECOND time by
+rem  fall-through - and that pass is not a `call`, so its `exit /b` runs at top level and
+rem  ENDS THE SCRIPT. :detect_device and :menu were unreachable on the normal USB start;
+rem  the only way in was the no-device -> [W] Wireless ADB -> Back detour.
+goto detect_device
 
 :pick_device
 :: Decides WHICH attached device every later adb call talks to, by setting ANDROID_SERIAL.
@@ -608,12 +613,19 @@ goto :eof
 :: (& | < >) break backup GENERATION (echo `a&b` ran `b` as a command and wrote
 :: a truncated line). DCX-managed values don't contain those, but the backup
 :: also captures whatever the device currently holds under these keys.
-setlocal enabledelayedexpansion
+:: FIX (value truncated at '!'): the capture ran with delayed expansion already ON, and
+:: `set "_val=%%v"` then EATS any '!' in the device's value - "Hi!There!" was stored as
+:: "Hi". That is not a display glitch: the truncated text is what gets written into the
+:: backup, so restoring it SILENTLY REWRITES the setting to the shortened value. Read the
+:: value with delayed expansion OFF, then turn it on for the substitutions below. Same
+:: split applied to :_bk_devcfg, :_bk_prop and :_tw_prof_add.
+setlocal DisableDelayedExpansion
 set "_ns=%~1"
 set "_key=%~2"
 set "_out=%~3"
 set "_val="
 for /f "delims=" %%v in ('adb shell settings get %_ns% %_key% 2^>nul ^<nul') do set "_val=%%v"
+setlocal EnableDelayedExpansion
 if "!_val!"=="" set "_val=null"
 :: FIX (found by the new [FAIL] report, on a real restore): adb strips ONE level of
 :: quoting. cmd removes the quotes around the value when building adb's argv, adb
@@ -631,16 +643,19 @@ if /i "!_val!"=="null" (
     >>"%_out%" echo call :dcx_do "settings put %_ns% %_key% '!_sv!'"
 )
 endlocal
+endlocal
 exit /b
 
 :_bk_devcfg
-:: FIX (robustness): same as :_bk_settings - delayed expansion + quoted value.
-setlocal enabledelayedexpansion
+:: FIX (robustness): same as :_bk_settings - delayed expansion + quoted value, and the
+:: same DisableDelayedExpansion read so a '!' in the value is not eaten.
+setlocal DisableDelayedExpansion
 set "_ns=%~1"
 set "_key=%~2"
 set "_out=%~3"
 set "_val="
 for /f "delims=" %%v in ('adb shell device_config get %_ns% %_key% 2^>nul ^<nul') do set "_val=%%v"
+setlocal EnableDelayedExpansion
 if "!_val!"=="" set "_val=null"
 :: single-quote for the device shell - see the note in :_bk_settings.
 set "_sv=!_val:'='\''!"
@@ -649,6 +664,7 @@ if /i "!_val!"=="null" (
 ) else (
     >>"%_out%" echo call :dcx_do "device_config put %_ns% %_key% '!_sv!'"
 )
+endlocal
 endlocal
 exit /b
 
@@ -679,31 +695,36 @@ exit /b
 :_bk_dcfgsync
 :: Captures device_config get_sync_disabled_for_tests (none/persistent/
 :: until_reboot). Not a settings put key - Tweaks owns this toggle.
+:: FIX (fabricated capture): an unreadable answer used to be recorded as 'none', so the
+:: backup carried a restore line for a value it had never read - on a build without the
+:: getter that silently writes "none" onto the device at restore time. Emit a comment
+:: instead, the same way :_bk_prop handles a property that was unset at backup time.
 setlocal enabledelayedexpansion
 set "_out=%~1"
-set "_val="
-for /f "delims=" %%v in ('adb shell device_config get_sync_disabled_for_tests 2^>nul ^<nul') do set "_val=%%v"
-if "!_val!"=="" set "_val=none"
-set "_val=!_val:"=!"
-set "_ok="
-if /i "!_val!"=="none" set "_ok=1"
-if /i "!_val!"=="persistent" set "_ok=1"
-if /i "!_val!"=="until_reboot" set "_ok=1"
-if not defined _ok set "_val=none"
->>"%_out%" echo call :dcx_do "device_config set_sync_disabled_for_tests '!_val!'"
+call :_dcfgsync_read
+if errorlevel 1 (
+    >>"%_out%" echo :: device_config sync mode was not readable on this device - not restoring
+) else (
+    >>"%_out%" echo call :dcx_do "device_config set_sync_disabled_for_tests '!DCS_VAL!'"
+)
 endlocal
 exit /b
 
 :_bk_prop
-:: FIX (robustness): (1) an UNSET prop makes getprop return empty; the old code
-:: then wrote `setprop key ""`, which on restore SETS the prop to empty instead
-:: of leaving it untouched. Emit a comment instead. (2) delayed expansion so a
-:: metachar value can't corrupt the generated line.
-setlocal enabledelayedexpansion
+:: (1) An UNSET prop makes getprop return empty, and the old code then emitted
+::     `setprop key ""` as a restore line. That does not set the prop to empty - the
+::     quotes never reach the phone, so setprop gets one argument and just prints its
+::     usage text (see the note under :_sf_clear_props). Either way it is not a
+::     restore, so emit a comment instead and leave the prop alone.
+:: (2) Delayed expansion so a metachar value cannot corrupt the generated line, and
+::     DisableDelayedExpansion on the read so a '!' in the value is not eaten - see
+::     the note in :_bk_settings.
+setlocal DisableDelayedExpansion
 set "_key=%~1"
 set "_out=%~2"
 set "_val="
 for /f "delims=" %%v in ('adb shell getprop %_key% 2^>nul ^<nul') do set "_val=%%v"
+setlocal EnableDelayedExpansion
 :: single-quote for the device shell - see the note in :_bk_settings.
 set "_sv=!_val:'='\''!"
 if "!_val!"=="" (
@@ -711,6 +732,7 @@ if "!_val!"=="" (
 ) else (
     >>"%_out%" echo call :dcx_do "setprop %_key% '!_sv!'"
 )
+endlocal
 endlocal
 exit /b
 :: ===================================================================
@@ -1243,9 +1265,11 @@ echo.
 echo  %b%[%w%1%b%]%w% Open diff in Notepad
 echo  %b%[%w%2%b%]%w% Show diff here (MORE)
 echo  %b%[%w%3%b%]%w% Back
-set "cd=" & set /p cd="Choose An Option >> "
-if "!cd!"=="1" (start "" notepad "!DIFFOUT!" & goto check_menu)
-if "!cd!"=="2" (cls & more "!DIFFOUT!" & pause >nul & goto check_menu)
+:: "ckd", not "cd" - a variable named cd shadows cmd's dynamic %CD% (current directory)
+:: for this process and every child it spawns. See the note in :dispscaler_custom.
+set "ckd=" & set /p ckd="Choose An Option >> "
+if "!ckd!"=="1" (start "" notepad "!DIFFOUT!" & goto check_menu)
+if "!ckd!"=="2" (cls & more "!DIFFOUT!" & pause >nul & goto check_menu)
 goto check_menu
 
 :check_diff_none
@@ -1441,8 +1465,8 @@ adb shell cmd autofill set log_level off <nul
 adb shell cmd thermalservice override-status 1 <nul
 :: ----- NEW SAFE OPTIMIZATIONS (from the .sh script, vetted) -----
 :: Universal log silencer (REAL, persists across reboots)
-adb shell setprop persist.log.tag "*:S" <nul > nul 2>&1
-adb shell setprop log.tag "*:S" <nul > nul 2>&1
+adb shell setprop persist.log.tag '*:S' <nul > nul 2>&1
+adb shell setprop log.tag '*:S' <nul > nul 2>&1
 :: NOTE: ANGLE-for-all-apps is intentionally NOT applied here.
 :: It is device/GPU dependent and is known to crash many apps on
 :: non-Pixel hardware (e.g. MediaTek GPUs). It remains available as a
@@ -2359,10 +2383,24 @@ for %%P in (
     debug.sf.late.app.duration
     debug.sf.late.sf.duration
 ) do (
-    adb shell setprop %%P "" <nul >nul 2>&1
+    adb shell setprop %%P '' <nul >nul 2>&1
     echo  cleared %%P
 )
 exit /b
+:: ===========================================================================
+:: WHY '' AND NOT "" - read this before "tidying" any setprop clear.
+:: `adb shell setprop KEY ""` DOES NOT CLEAR ANYTHING. cmd strips the quotes
+:: when it builds adb's argv, adb re-joins argv with spaces, and the Android
+:: shell then receives `setprop KEY` with ONE argument - so it prints
+::   usage: setprop NAME VALUE
+:: to stderr and changes nothing. Every such line in DCX was silently failing:
+:: SF offset Remove, Universal Logs On, Logs On (persist.log.tag), and GPU
+:: Renderer Clear all reported success while leaving the property set.
+:: Single quotes survive that round trip - cmd passes '' through literally and
+:: the device shell turns it into a genuine empty argument. Verified on a real
+:: device: "" left the value untouched, '' cleared it.
+:: Same quote-stripping mechanic the :_bk_settings note describes.
+:: ===========================================================================
 
 :dexopt
 @echo off
@@ -2503,7 +2541,13 @@ call :_pkg_ok || (
     goto Optimize
 )
 :: Verify the package actually exists on the device
-adb shell pm list packages 2>nul <nul | findstr /C:"package:!package!" > nul
+:: FIX (prefix collision): a bare findstr /C: is a SUBSTRING match, so "com.foo" matched
+:: the line for "com.foobar" and DCX reported an uninstalled package as present. /x pins
+:: it to the whole line - but /x alone is a trap: adb output can arrive LF-only, and
+:: findstr then treats the whole stream as ONE line, so /x would find nothing and every
+:: package would read as "not installed". `find /v ""` re-terminates the lines as CRLF
+:: first (the same normalisation :tw_snap_take already relies on). Verified both ways.
+adb shell pm list packages 2>nul <nul | find /v "" | findstr /x /c:"package:!package!" > nul
 if errorlevel 1 (
     echo [%r%^^!%w%] Package "!package!" is not installed on the device.
     pause > nul
@@ -2544,9 +2588,12 @@ echo [2] %r%Wipe all app cache folders (root required)%w%
 echo [3] %c%Back%w%
 echo.
 set "k=" & set /p k="Choose an option >> "
+:: FIX (navigation): every screen under Clear Cache used to exit two levels up to
+:: :Optimize, so "Back" from a sub-screen skipped its own parent and finishing an action
+:: dumped you out of the section entirely. Each now returns to the screen it came from.
 if "!k!"=="1" goto cache_trim
 if "!k!"=="2" goto cache_wipe
-if "!k!"=="3" goto Optimize
+if "!k!"=="3" goto cache
 goto sdgb
 
 :cache_trim
@@ -2559,7 +2606,7 @@ if errorlevel 1 (
     echo [%g%+%w%] Trim requested. Press any key.
 )
 pause > nul
-goto Optimize
+goto sdgb
 
 :cache_wipe
 cls
@@ -2571,7 +2618,7 @@ choice /c:CY /n > nul
 if errorlevel 2 goto cache_wipe_go
 echo Cancelled.
 pause > nul
-goto Optimize
+goto sdgb
 
 :cache_wipe_go
 echo.
@@ -2582,7 +2629,7 @@ echo      This wipe needs a rooted device such as Magisk.
 echo.
 echo Press Any Button To Go Back
 pause > nul
-goto Optimize
+goto sdgb
 
 :cache_wipe_root_ok
 echo Wiping all app cache folders...
@@ -2593,7 +2640,7 @@ echo Wiping all app cache folders...
 adb shell "su -c 'for p in /data/data/*/cache; do rm -rf $p/*; done'" <nul
 echo Cache wipe complete. A reboot is recommended.
 pause > nul
-goto Optimize
+goto sdgb
 :: battery
 :Battery
 @echo off
@@ -2704,7 +2751,7 @@ echo(!BPKG!| findstr /r /x /c:"[a-zA-Z][a-zA-Z0-9._]*" >nul || (
     timeout /t 2 /nobreak >nul
     goto appbattery
 )
-adb shell pm list packages <nul 2>nul | findstr /C:"package:!BPKG!" >nul
+adb shell pm list packages <nul 2>nul | find /v "" | findstr /x /c:"package:!BPKG!" >nul
 if errorlevel 1 (
     echo  %r%Package not installed:%w% !BPKG!
     timeout /t 2 /nobreak >nul
@@ -2932,10 +2979,16 @@ if not "!wl!"=="3" goto _skwl3
     cls
     echo Currently held wake locks:
     echo.
-    adb shell dumpsys power ^<nul 2^>nul ^| findstr /C:"PARTIAL_WAKE_LOCK"
+    :: FIX: these two lines carried the ^< ^> ^| escaping that only belongs INSIDE a
+    :: for /f ('...') clause. Out here the carets make the operators LITERAL, so the
+    :: whole string was handed to adb as arguments and forwarded to the ANDROID shell -
+    :: which has no `findstr` and no `nul` device, so the summary printed shell errors
+    :: instead of wake locks. Filter on the device with grep, exactly as Sections 1 and 3
+    :: of the report above already do; <nul stays on the Windows side (press-twice guard).
+    adb shell "dumpsys power 2>/dev/null | grep -E 'PARTIAL_WAKE_LOCK'" <nul
     echo.
     echo Doze state:
-    adb shell dumpsys deviceidle ^<nul 2^>nul ^| findstr /C:"mState=" /C:"mScreenOn"
+    adb shell "dumpsys deviceidle 2>/dev/null | grep -E 'mState=|mScreenOn'" <nul
     echo.
     echo Full report at: %WLREPORT%
     echo.
@@ -3499,7 +3552,7 @@ for /f "tokens=1 delims=:" %%a in ('adb shell getprop ^<nul ^| findstr "log.tag"
     set "prop=!prop: =!"
     set "prop=!prop:[=!"
     set "prop=!prop:]=!"
-    adb shell setprop !prop! "" <nul >nul 2>&1
+    adb shell setprop !prop! '' <nul >nul 2>&1
 )
 echo.
 echo  Cleared. A reboot finishes restoring default log levels.
@@ -3531,23 +3584,9 @@ goto logappsuser
 cls
 title Log For User Apps : Off
 call :logo
-:: FIX: this was one "adb shell" per package. Measured on a real device (Android 12,
-:: 269 packages): ~99 ms per round trip = ~26.6 SECONDS spent entirely on transport,
-:: for work the device finishes in milliseconds. The loop now runs INSIDE the device
-:: shell - one connection, same work, same per-package progress, because the device
-:: echoes each name back and the Windows side just prints it. Verified to return the
-:: identical 269-package set as the old parse before it was changed.
-::
-:: The other option - chaining every command into ONE Windows-built string with ";" -
-:: does NOT work here: "pm list package" is the FULL list, and 269 packages is ~20k
-:: characters against cmd's 8191-char command line. cmd truncates it silently, so
-:: packages past the cut are skipped with no error at all.
-::
-:: Two details that matter: "${p#package:}" strips the prefix ON THE DEVICE, so the
-:: name never crosses the adb transport mid-loop (no CRLF to trip over); and the
-:: redirects are ">/dev/null 2>/dev/null", never "2>&1" - an "&" inside a quoted adb
-:: argument inside a for /f IN clause is exactly the nested-quoting boundary that has
-:: bitten this script before, and "2>/dev/null" needs no "&" to do the same job.
+:: Same in-device loop as :lstused - see the note there before changing the shape of
+:: this line (why it is not one adb call per package, why not one long ";" string, and
+:: why the redirects are "2>/dev/null" rather than "2>&1").
 for /f "delims=" %%a in ('adb shell "pm list packages | while read p; do p=${p#package:}; cmd package log-visibility --disable $p >/dev/null 2>/dev/null; echo $p; done" ^<nul') do (
 echo Log disabled : %%a
 )
@@ -3561,23 +3600,9 @@ goto nextpage
 cls
 title Log For User Apps : On
 call :logo
-:: FIX: this was one "adb shell" per package. Measured on a real device (Android 12,
-:: 269 packages): ~99 ms per round trip = ~26.6 SECONDS spent entirely on transport,
-:: for work the device finishes in milliseconds. The loop now runs INSIDE the device
-:: shell - one connection, same work, same per-package progress, because the device
-:: echoes each name back and the Windows side just prints it. Verified to return the
-:: identical 269-package set as the old parse before it was changed.
-::
-:: The other option - chaining every command into ONE Windows-built string with ";" -
-:: does NOT work here: "pm list package" is the FULL list, and 269 packages is ~20k
-:: characters against cmd's 8191-char command line. cmd truncates it silently, so
-:: packages past the cut are skipped with no error at all.
-::
-:: Two details that matter: "${p#package:}" strips the prefix ON THE DEVICE, so the
-:: name never crosses the adb transport mid-loop (no CRLF to trip over); and the
-:: redirects are ">/dev/null 2>/dev/null", never "2>&1" - an "&" inside a quoted adb
-:: argument inside a for /f IN clause is exactly the nested-quoting boundary that has
-:: bitten this script before, and "2>/dev/null" needs no "&" to do the same job.
+:: Same in-device loop as :lstused - see the note there before changing the shape of
+:: this line (why it is not one adb call per package, why not one long ";" string, and
+:: why the redirects are "2>/dev/null" rather than "2>&1").
 for /f "delims=" %%a in ('adb shell "pm list packages | while read p; do p=${p#package:}; cmd package log-visibility --enable $p >/dev/null 2>/dev/null; echo $p; done" ^<nul') do (
 echo Log enabled : %%a
 )
@@ -3746,8 +3771,8 @@ call :_dcfg_warn
 :: This is what `persist.log.tag "*:S"` from the user's .sh actually
 :: does - silences ALL logcat tags at the "Silent" level. The
 :: existing per-tag setprops below remain as a belt-and-braces.
-adb shell setprop persist.log.tag "*:S" <nul > nul 2>&1
-adb shell setprop log.tag "*:S" <nul > nul 2>&1
+adb shell setprop persist.log.tag '*:S' <nul > nul 2>&1
+adb shell setprop log.tag '*:S' <nul > nul 2>&1
 adb shell setprop debug.vendor.gpu.record_sbwc false <nul
 adb shell setprop debug.egl.blobcache.multifile false <nul
 adb shell setprop debug.tracefpunwindoff 1 <nul
@@ -3841,10 +3866,17 @@ adb shell setprop persist.traced_perf.enable false <nul > nul 2>&1
 adb shell setprop debug.renderengine.skia_use_perfetto_track_events false <nul
 adb shell setprop debug.tracing.ctl.renderengine.skia_tracing_enabled false <nul
 adb shell setprop debug.hwui.skp_filename false <nul
-adb shell setprop debug.sqlite.journalmode OFF <nul
-adb shell setprop debug.sqlite.syncmode OFF <nul
+:: REMOVED (harmful): debug.sqlite.journalmode OFF / syncmode OFF / wal.syncmode OFF.
+:: These switch off SQLite's durability for EVERY database on the device. journalmode=OFF
+:: removes the rollback journal, so a transaction interrupted by a crash, a kernel panic
+:: or a battery pull cannot be rolled back and leaves a CORRUPT database; syncmode=OFF
+:: (and its WAL counterpart) stop SQLite calling fsync, so committed data that the app
+:: believes is on disk can vanish. The cost is contacts, messages, app state - not logs.
+:: wal.syncmode goes with the other two on purpose: modern Android databases mostly run
+:: in WAL mode, so removing syncmode while leaving wal.syncmode would look fixed and
+:: leave the same hole open. journalsizelimit is kept - it only caps the journal FILE
+:: SIZE after commit and costs nothing in integrity.
 adb shell setprop debug.sqlite.journalsizelimit 1mb <nul
-adb shell setprop debug.sqlite.wal.syncmode OFF <nul
 adb shell setprop debug.sf.dump.external false <nul
 adb shell setprop debug.sf.dump.primary false <nul
 adb shell setprop debug.sf.dump.png 0 <nul
@@ -4015,7 +4047,11 @@ adb shell settings put global enable_gnss_raw_meas_full_tracking 0 <nul
 adb shell settings put global force_enable_pss_profiling 0 <nul
 adb shell settings put global verbose_logging_level_disabled 1 <nul
 adb shell settings put global enable_gpu_debug_layers 0 <nul
-adb shell settings delete global gpu_debug_layers <nul
+:: FIX (unrecoverable delete): this used to `settings delete global gpu_debug_layers`.
+:: That key holds a developer's chosen GPU debug-layer LIST, the delete threw the value
+:: away, and Logs On has nothing to restore it from - the one destructive, non-revertible
+:: write in this whole path. It was also redundant: enable_gpu_debug_layers 0 on the line
+:: above is the master switch, and the list does nothing while that is off. Dropped.
 adb shell settings put global sys_traced 0 <nul
 adb shell settings put global autofill_logging_level 0 <nul
 adb shell settings put global dropbox_max_files 1 <nul
@@ -4071,8 +4107,21 @@ cls
 title Logs/etc : On
 call :_dcfg_warn
 :: NEW: revert universal log silencer
-adb shell setprop persist.log.tag "" <nul > nul 2>&1
-adb shell setprop log.tag "" <nul > nul 2>&1
+:: '' not "" - see the note under :_sf_clear_props; "" never clears anything.
+adb shell setprop persist.log.tag '' <nul > nul 2>&1
+adb shell setprop log.tag '' <nul > nul 2>&1
+:: FIX (revert-completeness): Logs Off writes persist.debug.trace_layouts false and
+:: nothing here undid it. persist.* SURVIVES REBOOT, so one Logs Off pinned it off
+:: permanently - the restart prompted at the end of this path does not cover it.
+:: Every other persist.* prop that path sets is reverted (persist.log.tag,
+:: persist.log.tag.DisplayPowerController, persist.traced.enable,
+:: persist.traced_perf.enable), so this was an omission, not a policy.
+adb shell setprop persist.debug.trace_layouts '' <nul > nul 2>&1
+:: Clear the SQLite durability props an OLDER DCX set in Logs Off, for anyone who ran it
+:: before they were removed and has not rebooted since - see the note in :skiplogv.
+adb shell setprop debug.sqlite.journalmode '' <nul > nul 2>&1
+adb shell setprop debug.sqlite.syncmode '' <nul > nul 2>&1
+adb shell setprop debug.sqlite.wal.syncmode '' <nul > nul 2>&1
 adb shell logcat -G 256kb <nul
 adb shell device_config put adservices enable_ad_services_system_api true <nul
 adb shell device_config put odad mismatch_metrics_v2_enabled true <nul
@@ -4873,24 +4922,31 @@ echo  Enter a custom WIDTH, HEIGHT and DENSITY. Tip: keep the same
 echo  width:height ratio as native to avoid stretching, and scale density
 echo  by the same factor to keep the UI size consistent.
 echo.
-set "CW=" & set "CH=" & set "CD="
+:: FIX (reserved name): this used a variable literally called CD. %CD% is cmd's DYNAMIC
+:: current-directory pseudo-variable, and a real environment variable of that name
+:: SHADOWS it - for the rest of the session and, because the environment is inherited,
+:: inside every child process DCX spawns (notepad, powershell, the restore/undo .bat it
+:: runs through `cmd /c`). Nothing in DCX reads %CD% as a path today, so this was latent
+:: rather than broken - but a density like "320" masquerading as the working directory is
+:: the kind of thing that is invisible until it is very confusing. Renamed to CDPI.
+set "CW=" & set "CH=" & set "CDPI="
 set /p "CW=Width  (blank = cancel) >> "
 if "!CW!"=="" goto dispscaler
 set /p "CH=Height (blank = cancel) >> "
 if "!CH!"=="" goto dispscaler
-set "CD=" & set /p "CD=Density dpi (blank = cancel) >> "
-if "!CD!"=="" goto dispscaler
+set "CDPI=" & set /p "CDPI=Density dpi (blank = cancel) >> "
+if "!CDPI!"=="" goto dispscaler
 echo !CW!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
 echo !CH!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
-echo !CD!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
+echo !CDPI!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_custom_bad
 :: sane bounds so a typo can't leave the UI unusable
 if %CW% LSS 320 goto dispscaler_custom_bad
 if %CH% LSS 320 goto dispscaler_custom_bad
 if %CW% GTR 8000 goto dispscaler_custom_bad
 if %CH% GTR 8000 goto dispscaler_custom_bad
-if %CD% LSS 80 goto dispscaler_custom_bad
-if %CD% GTR 900 goto dispscaler_custom_bad
-set "NW=%CW%" & set "NH=%CH%" & set "ND=%CD%"
+if %CDPI% LSS 80 goto dispscaler_custom_bad
+if %CDPI% GTR 900 goto dispscaler_custom_bad
+set "NW=%CW%" & set "NH=%CH%" & set "ND=%CDPI%"
 goto dispscaler_set
 
 :dispscaler_custom_bad
@@ -4978,13 +5034,14 @@ title Display Scaler : custom dpi
 call :logo
 echo  Native density: %g%%PD% dpi%w%   (lower = smaller UI, higher = bigger)
 echo.
-set "CD="
-set /p "CD=Density dpi (blank = cancel) >> "
-if "!CD!"=="" goto dispscaler_dpi
-echo !CD!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_dpi_custom_bad
-if %CD% LSS 80 goto dispscaler_dpi_custom_bad
-if %CD% GTR 900 goto dispscaler_dpi_custom_bad
-set "ND=%CD%"
+:: CDPI, not CD - see the note in :dispscaler_custom (%CD% is cmd's current directory).
+set "CDPI="
+set /p "CDPI=Density dpi (blank = cancel) >> "
+if "!CDPI!"=="" goto dispscaler_dpi
+echo !CDPI!| findstr /r "^[1-9][0-9]*$" >nul || goto dispscaler_dpi_custom_bad
+if %CDPI% LSS 80 goto dispscaler_dpi_custom_bad
+if %CDPI% GTR 900 goto dispscaler_dpi_custom_bad
+set "ND=%CDPI%"
 goto dispscaler_dpi_set
 
 :dispscaler_dpi_custom_bad
@@ -5107,9 +5164,12 @@ goto gpurenderer
 :gpurenderer_clear
 cls
 title GPU Renderer : Clear
-:: An empty value makes Android fall back to the framework default
-adb shell setprop debug.hwui.renderer "" <nul
-adb shell setprop debug.renderengine.backend "" <nul
+:: An empty value makes Android fall back to the framework default.
+:: '' not "" - with "" the quotes never reach the device and setprop just prints
+:: its usage text, so "Clear override" used to report success and clear nothing.
+:: See the note under :_sf_clear_props.
+adb shell setprop debug.hwui.renderer '' <nul
+adb shell setprop debug.renderengine.backend '' <nul
 echo Renderer override cleared. Framework default in effect after reboot.
 pause > nul
 goto gpurenderer
@@ -5517,7 +5577,7 @@ adb shell cmd appops set com.google.android.gms INSTANT_APP_START_FOREGROUND ign
 adb shell am set-inactive --user 0 com.google.android.gms true <nul
 adb shell am set-standby-bucket --user 0 com.google.android.gms never <nul
 echo.
-adb shell pm list packages -d <nul 2>nul | findstr /C:"package:com.google.android.gms" >nul
+adb shell pm list packages -d <nul 2>nul | find /v "" | findstr /x /c:"package:com.google.android.gms" >nul
 if not errorlevel 1 (
     echo [%g%+%w%] com.google.android.gms is disabled-user.
 ) else (
@@ -5540,7 +5600,7 @@ adb shell am set-inactive --user 0 com.google.android.gms false <nul
 adb shell am set-standby-bucket --user 0 com.google.android.gms active <nul
 title GMS : On
 echo.
-adb shell pm list packages -d <nul 2>nul | findstr /C:"package:com.google.android.gms" >nul
+adb shell pm list packages -d <nul 2>nul | find /v "" | findstr /x /c:"package:com.google.android.gms" >nul
 if errorlevel 1 (
     echo [%g%+%w%] com.google.android.gms is enabled.
 ) else (
@@ -5603,7 +5663,7 @@ goto gms
 
 :_gms_safe_one
 :: %1 = disable-user ^| enable    %2 = package
-adb shell pm list packages 2>nul <nul | findstr /C:"package:%~2" >nul
+adb shell pm list packages 2>nul <nul | find /v "" | findstr /x /c:"package:%~2" >nul
 if errorlevel 1 (
     echo  skip  %~2 ^(not installed^)
     exit /b 0
@@ -5861,6 +5921,13 @@ adb shell cmd power set-adaptive-power-saver-enabled true <nul > nul 2>&1
 adb shell settings delete global low_power <nul > nul 2>&1
 adb shell settings delete system multicore_packet_scheduler <nul > nul 2>&1
 adb shell settings delete global sem_enhanced_cpu_responsiveness <nul > nul 2>&1
+:: Clear the SQLite durability props an OLDER DCX set here, for anyone who ran Performance
+:: On before they were removed and has not rebooted since. They are volatile, so this is
+:: only about not making the user wait for a reboot to get fsync back. Empty = platform
+:: default. Same "Revert still clears leftovers from an old run" habit as Network Boost.
+adb shell setprop debug.sqlite.journalmode '' <nul > nul 2>&1
+adb shell setprop debug.sqlite.syncmode '' <nul > nul 2>&1
+adb shell setprop debug.sqlite.wal.syncmode '' <nul > nul 2>&1
 if "%SDK%"=="" (
     adb shell settings delete global device_idle_constants <nul > nul 2>&1
 ) else if %SDK% GEQ 31 (
@@ -5912,10 +5979,11 @@ adb shell setprop debug.hwc.hdr_nbm_enable 0 <nul
 :: FIX: removed debug.choreographer.vsync false  - disabling vsync
 :: causes screen tearing and breaks frame pacing. Not a real
 :: performance improvement; modern GPUs need vsync for stability.
-adb shell setprop debug.sqlite.journalmode OFF <nul
-adb shell setprop debug.sqlite.syncmode OFF <nul
+:: REMOVED (harmful): debug.sqlite.journalmode / syncmode / wal.syncmode OFF - same
+:: reasoning as the copy in :skiplogv. Trading database integrity for write throughput is
+:: not a performance mode, it is a corruption risk, and it is the user's contacts and
+:: messages on the line. journalsizelimit is harmless and stays.
 adb shell setprop debug.sqlite.journalsizelimit 1mb <nul
-adb shell setprop debug.sqlite.wal.syncmode OFF <nul
 adb shell setprop debug.hwui.disable_draw_defer true <nul
 adb shell setprop debug.hwui.disable_draw_reorder false <nul
 adb shell setprop debug.sf.disable_client_composition_cache 1 <nul
@@ -6073,7 +6141,7 @@ call :_pkg_ok || (
     timeout /t 2 /nobreak > nul
     goto appmgr
 )
-adb shell pm list packages < nul 2>nul | findstr /C:"package:!pkg!" >nul
+adb shell pm list packages < nul 2>nul | find /v "" | findstr /x /c:"package:!pkg!" >nul
 if errorlevel 1 (
     echo [%r%^^!%w%] "!pkg!" is not installed.
     pause >nul
@@ -6103,7 +6171,7 @@ call :_pkg_ok || (
     timeout /t 2 /nobreak > nul
     goto appmgr
 )
-adb shell pm list packages < nul 2>nul | findstr /C:"package:!pkg!" >nul
+adb shell pm list packages < nul 2>nul | find /v "" | findstr /x /c:"package:!pkg!" >nul
 if errorlevel 1 (
     echo [%r%^^!%w%] "!pkg!" is not installed.
     pause >nul
@@ -6150,7 +6218,7 @@ if "%BLOCKED%"=="1" (
     pause >nul
     goto appmgr_debloat_input
 )
-adb shell pm list packages < nul 2>nul | findstr /C:"package:!pkg!" >nul
+adb shell pm list packages < nul 2>nul | find /v "" | findstr /x /c:"package:!pkg!" >nul
 if errorlevel 1 (
     echo [%r%^^!%w%] "!pkg!" is not installed.
     pause >nul
@@ -6184,7 +6252,7 @@ call :_pkg_ok || (
 )
 adb shell cmd package install-existing !pkg! <nul
 echo.
-adb shell pm list packages 2>nul <nul | findstr /C:"package:!pkg!" >nul
+adb shell pm list packages 2>nul <nul | find /v "" | findstr /x /c:"package:!pkg!" >nul
 if errorlevel 1 (
     echo [%r%^^!%w%] Restore did not land - "!pkg!" is not installed for this user.
     echo      It may never have been a system/preloaded package, or the APK is gone.
@@ -6204,13 +6272,32 @@ echo  [%g%1%w%] All packages
 echo  [%g%2%w%] User + updated apps only (-3) - usually where bloat lives
 echo  [%g%3%w%] Back
 set "lp=" & set /p lp="Choose An Option >> "
+if not defined lp goto appmgr_listpkgs
 if "!lp!"=="3" goto appmgr
+:: FIX (stale list): only 1/2/3 were handled and there was no re-ask, so any other key
+:: ran NO adb command and fell straight through to `start notepad` below. %PKGLIST% is a
+:: FIXED temp filename, so from the second visit onward that opened the PREVIOUS run's
+:: list with nothing marking it stale - and debloat decisions get made off this list.
+:: Re-ask on anything else, and delete the file first so a dump that fails cannot leave
+:: old data on screen.
+if not "!lp!"=="1" if not "!lp!"=="2" goto appmgr_listpkgs
 set "PKGLIST=%TEMP%\dcx_installed_packages.txt"
-if "!lp!"=="1" adb shell pm list packages < nul 2>nul > "%PKGLIST%"
-if "!lp!"=="2" adb shell pm list packages -3 < nul 2>nul > "%PKGLIST%"
-if not exist "%PKGLIST%" goto appmgr
+del "%PKGLIST%" > nul 2>&1
+:: `find /v ""` also fixes the file Notepad opens: adb's LF-only output renders as one
+:: enormous line in older Notepad builds.
+if "!lp!"=="1" adb shell pm list packages < nul 2>nul | find /v "" > "%PKGLIST%"
+if "!lp!"=="2" adb shell pm list packages -3 < nul 2>nul | find /v "" > "%PKGLIST%"
+:: An empty file still passes `if exist`, so prove a real package line landed - same
+:: shape as the _bkok guard in :backup. Covers "file missing" too (findstr exits 2).
+findstr /b /c:"package:" "%PKGLIST%" >nul 2>&1 || goto appmgr_listpkgs_none
 start "" notepad "%PKGLIST%"
 echo Opened in Notepad. Use these names with Restrict / Debloat.
+pause >nul
+goto appmgr
+
+:appmgr_listpkgs_none
+echo.
+echo  %r%No packages were listed.%w% Is the device still connected? ^(check: adb devices^)
 pause >nul
 goto appmgr
 :: ===================================================================
@@ -6227,7 +6314,9 @@ for /f "delims=" %%i in ('adb shell getprop ro.product.brand 2^>nul ^<nul') do s
 set "MANU="
 for /f "delims=" %%i in ('adb shell getprop ro.product.manufacturer 2^>nul ^<nul') do set "MANU=%%i"
 set "PKGDUMP=%TEMP%\dcx_pkgs.txt"
-adb shell pm list packages < nul 2>nul > "%PKGDUMP%"
+:: `find /v ""` normalises adb's possibly LF-only output to CRLF so the /x whole-line
+:: match in :_remove_present_set works - see the note at :compile.
+adb shell pm list packages < nul 2>nul | find /v "" > "%PKGDUMP%"
 echo  Detected brand: %BRAND%   manufacturer: %MANU%
 echo.
 echo  These groups only remove well-documented, safe-to-remove apps that
@@ -6282,13 +6371,13 @@ title Debloat : review
 call :logo
 echo  %BLOATDESC%
 echo.
-if not exist "%PKGDUMP%" adb shell pm list packages < nul 2>nul > "%PKGDUMP%"
+if not exist "%PKGDUMP%" adb shell pm list packages < nul 2>nul | find /v "" > "%PKGDUMP%"
 echo  Installed packages from this group (these will be removed):
 echo.
 set "_found="
 set "_n=0"
 for %%p in (%BLOATSET%) do (
-    findstr /C:"package:%%p" "%PKGDUMP%" >nul
+    findstr /x /c:"package:%%p" "%PKGDUMP%" >nul
     if not errorlevel 1 (
         echo     %%p
         set "_found=!_found! %%p"
@@ -6468,11 +6557,17 @@ title DeviceConfig Server Sync
 call :logo
 call :_dcfg_warn
 echo.
-set "DCS="
-for /f "delims=" %%i in ('adb shell device_config get_sync_disabled_for_tests 2^>nul ^<nul') do set "DCS=%%i"
-if "!DCS!"=="" set "DCS=null"
-set "DCS=!DCS:"=!"
-echo  device_config get_sync_disabled_for_tests = "!DCS!"
+:: Show what the device actually reports - and say so plainly when it reports nothing,
+:: rather than printing a mode DCX never read. See :_dcfgsync_read.
+call :_dcfgsync_read
+if errorlevel 1 (
+    echo  device_config get_sync_disabled_for_tests = %r%not readable on this build%w%
+    echo  This Android build does not implement the getter, so DCX cannot show the
+    echo  current mode or confirm a change. The setter below may still work - it just
+    echo  cannot be verified, and Backup will skip this key rather than guess.
+) else (
+    echo  device_config get_sync_disabled_for_tests = "!DCS_VAL!"
+)
 echo.
 echo  This is NOT Google/account sync. It freezes remote DeviceConfig flag
 echo  updates from the server ^(OEM/feature flags^). "persistent" survives
@@ -6854,7 +6949,7 @@ exit /b 0
 :_tw_undo_add
 :: Capture settings namespace/key into the session undo script before a write.
 call :_tw_undo_ensure
-call :_tw_undo_prep
+call :_tw_undo_prep || goto _tw_undo_broken
 call :_bk_settings %~1 %~2 "%EXP_UNDO%"
 call :_tw_undo_finish
 exit /b
@@ -6862,19 +6957,41 @@ exit /b
 :_tw_undo_dcfgsync
 :: Capture DeviceConfig sync mode into the same undo script.
 call :_tw_undo_ensure
-call :_tw_undo_prep
+call :_tw_undo_prep || goto _tw_undo_broken
 call :_bk_dcfgsync "%EXP_UNDO%"
 call :_tw_undo_finish
 exit /b
+
+:_tw_undo_broken
+:: Reached only when :_tw_undo_prep could not rewrite the undo script. Appending anyway
+:: would put the restore line AFTER "goto :dcx_report", where it never runs - an undo
+:: file that looks populated and restores nothing. Skip the append and SAY SO: the write
+:: the caller is about to make will not be undoable, and staying quiet about that is the
+:: exact failure this guard exists to prevent.
+echo  [%y%WARN%w%] Could not update the undo script - this change will NOT be recorded.
+echo         Check %USERPROFILE%\dcx_backups is writable ^(antivirus / Controlled
+echo         Folder Access are the usual cause^).
+exit /b 1
 
 :_tw_undo_prep
 :: Drop the trailing "goto :dcx_report" under :dcx_main so the next
 :: call :dcx_do line is appended inside :dcx_main ^(not after :dcx_hold^).
 if not defined EXP_UNDO exit /b 1
 if not exist "%EXP_UNDO%" exit /b 1
+:: FIX (silent undo loss): redirection CREATES the .tmp before findstr runs, and the old
+:: guard tested only existence - so a findstr that failed for any reason left a 0-byte
+:: .tmp that `move /y` then copied over the real undo script, wiping every captured
+:: value with no message. Require the rewritten file to still carry its :dcx_main label
+:: before trusting it; on any doubt keep the original untouched and fail to the caller.
+del "%EXP_UNDO%.tmp" > nul 2>&1
 findstr /v /b /c:"goto :dcx_report" "%EXP_UNDO%" > "%EXP_UNDO%.tmp" 2>nul
-if exist "%EXP_UNDO%.tmp" move /y "%EXP_UNDO%.tmp" "%EXP_UNDO%" >nul
+findstr /b /c:":dcx_main" "%EXP_UNDO%.tmp" >nul 2>&1 || goto _tw_undo_prep_fail
+move /y "%EXP_UNDO%.tmp" "%EXP_UNDO%" >nul || goto _tw_undo_prep_fail
 exit /b 0
+
+:_tw_undo_prep_fail
+del "%EXP_UNDO%.tmp" > nul 2>&1
+exit /b 1
 
 :_tw_undo_finish
 >>"%EXP_UNDO%" echo goto :dcx_report
@@ -7489,7 +7606,10 @@ goto tw_profile
 
 :tw_prof_save
 echo.
-set "PROFNAME=" & set /p PROFNAME="Optional name ^(blank = auto timestamp^) >> "
+:: FIX (cosmetic): the parens were caret-escaped, but inside a double-quoted set /p
+:: prompt a caret is NOT an escape character - it is printed. The prompt literally read
+:: "Optional name ^(blank = auto timestamp^) >> ". Quotes already make ( ) safe here.
+set "PROFNAME=" & set /p PROFNAME="Optional name (blank = auto timestamp) >> "
 set "PROFNAME=!PROFNAME:"=!"
 if defined PROFNAME (
     echo(!PROFNAME!| findstr /r /x /c:"[a-zA-Z0-9_ .-][a-zA-Z0-9_ .-]*" >nul || (
@@ -7573,13 +7693,19 @@ exit /b
 :_tw_prof_add
 :: %1 ns  %2 key  %3 profile file. Unset keys are recorded as DELETE so a
 :: profile round-trips "this key was not set" instead of losing it.
+:: DisableDelayedExpansion on the read so a '!' in the value is not eaten - see the note
+:: in :_bk_settings. Both goto exits below leave via `exit /b`, which pops the scopes.
+setlocal DisableDelayedExpansion
 set "PVAL="
 for /f "delims=" %%v in ('adb shell settings get %~1 %~2 2^>nul ^<nul') do set "PVAL=%%v"
+setlocal EnableDelayedExpansion
 if "!PVAL!"=="" set "PVAL=null"
 set "PVAL=!PVAL:"=!"
 if /i "!PVAL!"=="null" goto _tw_prof_del
 call :_tw_safechk PVAL || goto _tw_prof_skip
 >>"%~3" echo %~1^|%~2^|!PVAL!
+endlocal
+endlocal
 exit /b
 
 :_tw_prof_del
@@ -8396,16 +8522,39 @@ exit /b 1
 :: SHARED HELPER: :_dcfgsync_verify  expected
 :: Read back device_config get_sync_disabled_for_tests after a Tweaks write.
 :: ===================================================================
+:_dcfgsync_read
+:: Reads the sync mode into DCS_VAL. Returns 1 when this device cannot be read.
+::
+:: Not every build implements the getter. On EMUI 14 / API 31 `device_config
+:: get_sync_disabled_for_tests` answers "Invalid command" on stderr and exits 255,
+:: while the matching SETTER still returns 0. The old code could not tell that apart
+:: from a genuine "none": it mapped every unreadable answer to none and carried on -
+:: so the Tweaks screen displayed a mode it had never read, Backup wrote a restore
+:: line for a value it had never captured, and the verifier reported the write had
+:: failed when it had no way to know either way. Say "unreadable" instead of guessing.
+set "DCS_VAL="
+set "DCS_OK="
+for /f "delims=" %%v in ('adb shell device_config get_sync_disabled_for_tests 2^>nul ^<nul') do set "DCS_VAL=%%v"
+if not defined DCS_VAL exit /b 1
+set "DCS_VAL=!DCS_VAL:"=!"
+if /i "!DCS_VAL!"=="none" set "DCS_OK=1"
+if /i "!DCS_VAL!"=="persistent" set "DCS_OK=1"
+if /i "!DCS_VAL!"=="until_reboot" set "DCS_OK=1"
+if not defined DCS_OK exit /b 1
+exit /b 0
+
 :_dcfgsync_verify
-set "_ds="
-for /f "delims=" %%i in ('adb shell device_config get_sync_disabled_for_tests 2^>nul ^<nul') do set "_ds=%%i"
-if "!_ds!"=="" set "_ds=null"
-set "_ds=!_ds:"=!"
-if /i "!_ds!"=="%~1" (
-    echo [%g%+%w%] sync_disabled_for_tests = "!_ds!"
+call :_dcfgsync_read || goto _dcfgsync_verify_blind
+if /i "!DCS_VAL!"=="%~1" (
+    echo [%g%+%w%] sync_disabled_for_tests = "!DCS_VAL!"
 ) else (
-    echo [%y%WARN%w%] wanted sync mode %~1, device reports "!_ds!" - may need root on Android 14+.
+    echo [%y%WARN%w%] wanted sync mode %~1, device reports "!DCS_VAL!" - may need root on Android 14+.
 )
+exit /b
+
+:_dcfgsync_verify_blind
+echo [%y%NOTE%w%] this build does not implement the sync-mode readback, so DCX cannot
+echo        confirm the change either way. Requested: %~1
 exit /b
 :: ===================================================================
 :: SHARED HELPER: :_dcfg_verify  namespace  key  expected
@@ -8482,10 +8631,23 @@ echo.
 echo   Background dexopt finished.
 echo     Packages optimised : %_dx_perf%
 echo     Failures           : %_dx_fail%
+:: FIX: the heading promised 15 but `more +0` pages through EVERY failure, so on a device
+:: with hundreds the user is told "first 15" and then made to page through the lot. Cap it
+:: for real - and say how many were withheld rather than truncating silently, since the
+:: full log is kept below anyway. NB: this comment lives OUTSIDE the if-block on purpose -
+:: a "::" line inside ( ) makes cmd print "The system cannot find the drive specified."
 if not "%_dx_fail%"=="0" (
     echo.
     echo   Failed entries ^(first 15^):
-    findstr /I /C:"FAILED" "%TEMP%\dcx_bgdex.txt" | more +0 2>nul
+    set "_dx_shown=0"
+    for /f "delims=" %%L in ('findstr /I /C:"FAILED" "%TEMP%\dcx_bgdex.txt" 2^>nul') do (
+        set /a _dx_shown+=1
+        if !_dx_shown! LEQ 15 echo     %%L
+    )
+    if !_dx_shown! GTR 15 (
+        set /a _dx_more=!_dx_shown!-15
+        echo     ... and !_dx_more! more - see the full log below.
+    )
     echo.
     echo   Note: a few failures are normal - some system packages can't
     echo   be re-compiled. The full log is at:
