@@ -29,6 +29,15 @@ set t=%ESC%[40m
 set gold=%ESC%[93m
 :: Safely navigate to adb folder if it exists
 if exist adb\ cd adb
+:: Put that folder on PATH explicitly instead of trusting the current directory.
+:: DCX calls bare "adb" ~1500 times and relied on cmd searching the current directory -
+:: which it normally does, but NOT when NoDefaultCurrentDirectoryInExePath=1, a setting
+:: hardened and enterprise Windows images do apply. There the bundled adb\ sits right
+:: here and EVERY call still failed, with a message telling the user to go install the
+:: Platform Tools they already have. %CD% is correct on this line because it is a
+:: top-level statement: cmd expands it when the line runs, i.e. after the cd above.
+:: (Inside a ( ) block it would expand at parse time and still name the old directory.)
+if exist adb.exe set "PATH=%CD%;%PATH%"
 :: Verify ADB is available
 adb version > nul 2>&1
 if %errorlevel% neq 0 (
@@ -160,6 +169,9 @@ echo  phone reached two ways - either works, and "Enable over USB" leaves it lik
 echo.
 set "_pd_c=" & set /p _pd_c="Device number >> "
 if not defined _pd_c goto _pd_ask
+:: safechk before the probe below: it is pipe-free, so it rejects & | < > before they
+:: can reach a pipe that would re-parse them. Same order as the Tweaks screens.
+call :_tw_safechk _pd_c || goto _pd_ask
 echo(!_pd_c!| findstr /r /x /c:"[0-9][0-9]*" >nul || goto _pd_ask
 if !_pd_c! LSS 1 goto _pd_ask
 :: "01" passes all three checks above - findstr accepts it, and 01 compares as 1 - but
@@ -1117,8 +1129,12 @@ cls
 title Device Info ^& Diagnostics
 call :logo
 echo.
-echo  Generating full device report...
+echo  Generating full device report - about 50 device queries, ~10 seconds.
+echo  %y%The window cannot accept input until this finishes.%w%
 echo.
+:: Progress goes to 1>CON so it reaches the screen even though the whole block below is
+:: redirected into the report file. Verified: CON writes cannot leak into the report.
+:: Without this the screen sits blank for the whole run and looks hung.
 :: Remember the previous report path (if any) so the menu can offer a diff.
 set "PREV_REPORT="
 if exist "%TEMP%\dcx_last_report_path.txt" (
@@ -1139,6 +1155,7 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
     echo  DCX Device Diagnostic Report - %date% %time%
     echo ===========================================================
     echo.
+    echo    [1/6] hardware and software... 1>CON
     echo [Hardware]
     for /f "delims=" %%i in ('adb shell getprop ro.product.manufacturer 2^>nul ^<nul') do echo   Manufacturer        : %%i
     for /f "delims=" %%i in ('adb shell getprop ro.product.model 2^>nul ^<nul')        do echo   Model               : %%i
@@ -1154,6 +1171,7 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
     for /f "delims=" %%i in ('adb shell getprop ro.build.version.incremental 2^>nul ^<nul')    do echo   Build incremental   : %%i
     for /f "delims=" %%i in ('adb shell getprop ro.build.type 2^>nul ^<nul')                   do echo   Build type          : %%i
     echo.
+    echo    [2/6] memory and storage... 1>CON
     echo [Memory]
     for /f "tokens=2" %%i in ('adb shell "cat /proc/meminfo 2>/dev/null | grep MemTotal"')     do echo   Total RAM           : %%i kB
     for /f "tokens=2" %%i in ('adb shell "cat /proc/meminfo 2>/dev/null | grep MemAvailable"') do echo   Available RAM       : %%i kB
@@ -1175,6 +1193,7 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
     for /f "delims=" %%i in ('adb shell "dumpsys battery 2>/dev/null | grep 'status:'"')      do echo   Battery status     %%i
     for /f "delims=" %%i in ('adb shell "dumpsys battery 2>/dev/null | grep 'health:'"')      do echo   Battery health     %%i
     echo.
+    echo    [3/6] display and graphics... 1>CON
     echo [Display]
     for /f "tokens=2 delims=:=" %%i in ('adb shell "dumpsys SurfaceFlinger 2>/dev/null | grep refresh-rate"') do echo   Display refresh    : %%i Hz
     for /f "delims=" %%i in ('adb shell wm size 2^>nul ^<nul')                                              do echo   %%i
@@ -1186,6 +1205,7 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
     for /f "delims=" %%i in ('adb shell settings get global angle_gl_driver_all_angle 2^>nul ^<nul') do echo   angle_gl_driver_all_angle  : %%i ^(1=force ANGLE for all GLES apps, 0/null=off^)
     for /f "delims=" %%i in ('adb shell getprop persist.log.tag 2^>nul ^<nul')       do echo   persist.log.tag            : "%%i" ^(set to "*:S" to silence all logs^)
     echo.
+    echo    [4/6] animation, refresh and saver keys... 1>CON
     echo [Animation / Refresh - current values]
     for /f "delims=" %%i in ('adb shell settings get global window_animation_scale 2^>nul ^<nul')     do echo   window_animation_scale     : %%i
     for /f "delims=" %%i in ('adb shell settings get global transition_animation_scale 2^>nul ^<nul') do echo   transition_animation_scale : %%i
@@ -1199,6 +1219,7 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
     for /f "delims=" %%i in ('adb shell settings get global hotword_detection_enabled 2^>nul ^<nul')   do echo   hotword_detection_enabled  : %%i  ^(1=on, 0=off^)
     for /f "delims=" %%i in ('adb shell device_config get app_hibernation app_hibernation_enabled 2^>nul ^<nul') do echo   app_hibernation_enabled    : %%i
     echo.
+    echo    [5/6] network and power state... 1>CON
     echo [Network]
     for /f "delims=" %%i in ('adb shell settings get global preferred_network_mode 2^>nul ^<nul') do echo   Preferred network mode      : %%i
     for /f "delims=" %%i in ('adb shell settings get global private_dns_mode 2^>nul ^<nul')       do echo   Private DNS mode           : %%i
@@ -1208,6 +1229,7 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
     for /f "delims=" %%i in ('adb shell settings get global low_power 2^>nul ^<nul') do echo   Battery saver         : %%i
     adb shell "cmd power get-mode 2>/dev/null" <nul
     echo.
+    echo    [6/6] doze whitelist, RAM and focused app... 1>CON
     echo [Doze whitelist - first 20 entries]
     adb shell "dumpsys deviceidle whitelist 2>/dev/null" <nul
     echo.
@@ -1228,6 +1250,8 @@ set "REPORT=%TEMP%\dcx_report_%TS%.txt"
 :: timestamped temp file each time. (Re-entering :check fresh still makes a new
 :: dated report, which is the intended before/after-compare behavior.)
 :check_menu
+cls
+call :logo
 echo  %g%Report saved to:%w%
 echo    %REPORT%
 if defined PREV_REPORT if exist "!PREV_REPORT!" (
@@ -1239,15 +1263,29 @@ echo  %b%[%w%1%b%]%w% Open report in Notepad (scrollable, searchable)
 echo  %b%[%w%2%b%]%w% Show report in this window (paginated with MORE)
 echo  %b%[%w%3%b%]%w% Show short summary here ^& go back
 echo  %b%[%w%4%b%]%w% Diff vs previous report
-echo  %b%[%w%5%b%]%w% Back to main menu
+echo  %b%[%w%5%b%]%w% Back to main menu        %d%(0 or Q also work)%w%
 echo.
+echo  %d%Feeling stuck? %g%0%d% or %g%Q%d% leaves this screen. Inside the paginated view
+echo  it is %g%Q%d% ^(that is Windows' MORE pager, it only takes its own keys^).%w%
+echo.
+
+:check_menu_ask
+:: FIX (keypress ignored / screen flooded): this menu had no tight re-ask and no cls, so
+:: ANY miss redrew the whole block - including the phantom empty line the console hands
+:: set /p right after the ~50 adb probes above. The first keypress looked ignored, and a
+:: few misses stacked copies of the menu until the Back option scrolled away, which is
+:: what "hard stuck with no way out" actually was. Re-ask in place instead, redraw only
+:: on a real return, and accept 0/Q as Back. Same guard :menu_ask and :Gaming_ask use.
 set "ck=" & set /p ck="Choose An Option >> "
+if not defined ck goto check_menu_ask
 if "!ck!"=="1" goto check_open
 if "!ck!"=="2" goto check_paginate
 if "!ck!"=="3" goto check_summary
 if "!ck!"=="4" goto check_diff
 if "!ck!"=="5" goto menu
-goto check_menu
+if "!ck!"=="0" goto menu
+if /i "!ck!"=="q" goto menu
+goto check_menu_ask
 
 :check_diff
 if not defined PREV_REPORT goto check_diff_none
@@ -1269,7 +1307,7 @@ echo  %b%[%w%3%b%]%w% Back
 :: for this process and every child it spawns. See the note in :dispscaler_custom.
 set "ckd=" & set /p ckd="Choose An Option >> "
 if "!ckd!"=="1" (start "" notepad "!DIFFOUT!" & goto check_menu)
-if "!ckd!"=="2" (cls & more "!DIFFOUT!" & pause >nul & goto check_menu)
+if "!ckd!"=="2" (cls & title Report diff  -  SPACE=next page   Q=quit back to menu & more "!DIFFOUT!" & pause >nul & goto check_menu)
 goto check_menu
 
 :check_diff_none
@@ -1284,7 +1322,12 @@ goto check_menu
 
 :check_paginate
 cls
-title Device Diagnostics ^(paginated^)
+:: The keys go in the TITLE because it stays visible on every page - an echoed hint
+:: scrolls away after the first screenful. MORE is Windows' own pager and only accepts
+:: its own keys, so Q quits here; 0 is a DCX menu key and does nothing inside MORE.
+title Device Diagnostics  -  SPACE=next page   ENTER=one line   Q=quit back to menu
+echo  %d%[i]%w% Paging with MORE:  %g%SPACE%w% next page   %g%ENTER%w% one line   %g%Q%w% quit back to the menu.
+echo.
 more "%REPORT%"
 echo.
 echo Press Any Button To Go Back
@@ -2401,7 +2444,6 @@ exit /b
 :: device: "" left the value untouched, '' cleared it.
 :: Same quote-stripping mechanic the :_bk_settings note describes.
 :: ===========================================================================
-
 :dexopt
 @echo off
 cls
@@ -2517,12 +2559,14 @@ set "modeok=0"
 for %%m in (speed speed-profile verify quicken everything everything-profile) do (
     if /i "!mode!"=="%%m" set "modeok=1"
 )
-if "%modeok%"=="0" (
 :: The accepted set lives in THREE places - the "Valid modes" line above, the for-loop
 :: whitelist, and this error - and they have to say the same thing. This one used to list
 :: five of the six, silently dropping everything-profile, so a user who typo'd was told an
 :: option existed less than it did. The loop is the source of truth; keep both texts equal
 :: to it whenever a mode is added or removed.
+:: (Comment hoisted OUT of the if-block: a "::" inside ( ) makes cmd print "The system
+:: cannot find the drive specified." on every run through this path.)
+if "%modeok%"=="0" (
     echo [%r%^^!%w%] Invalid mode. Use one of: speed, speed-profile, verify, quicken,
     echo     everything, everything-profile.
     pause > nul
@@ -2746,7 +2790,12 @@ echo.
 set "BPKG=" & set /p BPKG="Package name >> "
 if not defined BPKG goto nextpage
 set "BPKG=!BPKG:"=!"
-echo(!BPKG!| findstr /r /x /c:"[a-zA-Z][a-zA-Z0-9._]*" >nul || (
+:: Route through the shared :_pkg_ok rather than repeating the charset inline. It is the
+:: same rule, and since :_pkg_ok went pipe-free this is also the only form that actually
+:: rejects a name containing & | < > - the inline `echo(!BPKG!| findstr` used to report
+:: such a name as valid AND execute the part after the metacharacter.
+set "_PKGCHK=!BPKG!"
+call :_pkg_ok || (
     echo  %r%Invalid package name.%w%
     timeout /t 2 /nobreak >nul
     goto appbattery
@@ -2898,8 +2947,10 @@ cls
 title Wake-Lock Audit
 call :logo
 echo.
-echo  Generating wake-lock + battery-stats report. Takes ~10 seconds.
+echo  Generating wake-lock + battery-stats report - 5 dumps, ~5-10 seconds.
+echo  %y%The window cannot accept input until this finishes.%w%
 echo.
+:: Progress via 1>CON so it reaches the screen despite the block redirect - see :check.
 :: Locale-safe, filename-safe timestamp from %date%/%time% (sanitize separators).
 set "TS=%date%_%time%"
 set "TS=%TS::=-%"
@@ -2914,6 +2965,7 @@ set "WLREPORT=%TEMP%\dcx_wakelocks_%TS%.txt"
     echo  DCX Wake-Lock Audit - %date% %time%
     echo ===========================================================
     echo.
+    echo    [1/5] held wake locks ^(this one is the slowest^)... 1>CON
     echo [Section 1] Currently held wake locks
     echo  ^(Each entry = something keeping CPU awake right now.
     echo   PARTIAL_WAKE_LOCK is the most common battery drain.^)
@@ -2921,23 +2973,27 @@ set "WLREPORT=%TEMP%\dcx_wakelocks_%TS%.txt"
     adb shell "dumpsys power 2>/dev/null | grep -E 'Wake Locks:|PARTIAL_WAKE_LOCK|SCREEN_BRIGHT|FULL_WAKE_LOCK'" <nul
     echo.
     echo.
+    echo    [2/5] battery stats since last charge... 1>CON
     echo [Section 2] Top wake-lock holders since last full charge
     echo  ^(Look at "Wake lock" totals - highest = biggest drainers.^)
     echo -----------------------------------------------------------
     adb shell "dumpsys batterystats --charged 2>/dev/null | head -200" <nul
     echo.
     echo.
+    echo    [3/5] doze state... 1>CON
     echo [Section 3] Doze ^(deep sleep^) state
     echo  ^(mState=IDLE means doze is active. ACTIVE = apps can run.^)
     echo -----------------------------------------------------------
     adb shell "dumpsys deviceidle 2>/dev/null | grep -E 'mState=|mLightState=|mActiveIdleOpCount|mScreenOn|mCharging'" <nul
     echo.
     echo.
+    echo    [4/5] alarms and wakeups... 1>CON
     echo [Section 4] Top alarms ^(background wakeups^)
     echo -----------------------------------------------------------
     adb shell "dumpsys alarm 2>/dev/null | grep -E 'Top Alarms|wakeups in last|act=' | head -50" <nul
     echo.
     echo.
+    echo    [5/5] CPU consumers... 1>CON
     echo [Section 5] Process CPU consumers ^(last sample^)
     echo -----------------------------------------------------------
     adb shell "dumpsys cpuinfo 2>/dev/null | head -25" <nul
@@ -2955,20 +3011,35 @@ set "WLREPORT=%TEMP%\dcx_wakelocks_%TS%.txt"
 :: menu so notepad / paginate / summary / invalid input don't re-run the ~10s
 :: report and write another timestamped temp file each time.
 :wakelockaudit_menu
+cls
+call :logo
 echo  %g%Report saved to:%w%
 echo    %WLREPORT%
 echo.
 echo  %b%[%w%1%b%]%w% Open in Notepad (searchable)
 echo  %b%[%w%2%b%]%w% Show paginated (MORE)
 echo  %b%[%w%3%b%]%w% Show summary only
-echo  %b%[%w%4%b%]%w% Back
+echo  %b%[%w%4%b%]%w% Back                     %d%(0 or Q also work)%w%
+echo.
+echo  %d%Feeling stuck? %g%0%d% or %g%Q%d% leaves this screen. Inside the paginated view
+echo  it is %g%Q%d% ^(that is Windows' MORE pager, it only takes its own keys^).%w%
+
+:wakelockaudit_menu_ask
+:: Same fix as :check_menu_ask - tight re-ask so the phantom empty line after the dumps
+:: cannot look like an ignored keypress, cls on redraw so misses do not stack menus.
 set "wl=" & set /p wl="Choose An Option >> "
+if not defined wl goto wakelockaudit_menu_ask
+if "!wl!"=="0" goto nextpage
+if /i "!wl!"=="q" goto nextpage
 if "!wl!"=="1" (
     start "" notepad "%WLREPORT%"
     goto wakelockaudit_menu
 )
 if "!wl!"=="2" (
     cls
+    title Wake-Lock Audit  -  SPACE=next page   ENTER=one line   Q=quit back to menu
+    echo  %d%[i]%w% Paging with MORE:  %g%SPACE%w% next page   %g%ENTER%w% one line   %g%Q%w% quit back to the menu.
+    echo.
     more "%WLREPORT%"
     echo.
     echo Press Any Button To Go Back
@@ -2997,7 +3068,9 @@ if not "!wl!"=="3" goto _skwl3
 
 :_skwl3
 if "!wl!"=="4" goto nextpage
-goto wakelockaudit_menu
+:: nothing was printed on this path, so the menu is still on screen - re-ask in place
+:: rather than redrawing it under itself.
+goto wakelockaudit_menu_ask
 :: ===================================================================
 :: NEW: Refresh Rate Lock  (from Extra_Boost.bat / Power_Saving.bat)
 :: Uses REAL Settings.System keys that Android honours:
@@ -3375,11 +3448,13 @@ for %%b in (
     START_FOREGROUND
     WAKE_LOCK
 ) do (
-:: !pkgv2! (delayed): this is the only !pkgv2! sitting INSIDE a ( ) block (the
-:: for %%b ... do (...) loop). pkgv2 is typed by the user; a ")" in it would close the
-:: do-block early at parse time and break the script - the same class as the :Summary
-:: crash in sincript. Delayed expansion keeps the block structure intact. The bare
-:: !pkgv2! statements outside any block (below) are not a cmd-parse risk.
+    rem !pkgv2! (delayed): this is the only !pkgv2! sitting INSIDE a ( ) block (the
+    rem for %%b ... do (...) loop). pkgv2 is typed by the user; a ")" in it would close
+    rem the do-block early at parse time and break the script. Delayed expansion keeps
+    rem the block structure intact. The bare !pkgv2! statements outside any block
+    rem (below) are not a cmd-parse risk.
+    rem NB: rem, not "::" - a "::" inside ( ) makes cmd print "The system cannot find
+    rem the drive specified." once per line, every time this loop runs.
     adb shell cmd appops set !pkgv2! %%b ignore <nul > nul 2>&1
 )
 adb shell cmd activity service-restart-backoff disable !pkgv2! <nul
@@ -4098,7 +4173,6 @@ adb shell logcat -G 64kb <nul
 adb shell wm tracing level critical <nul > nul 2>&1
 adb shell wm tracing size 1 <nul > nul 2>&1
 echo Done , Press Any Button To Go Back
-
 pause > nul
 goto Battery
 
@@ -5414,8 +5488,23 @@ goto :eof
 :: (!var!) so even that stays literal. The required dot is the correctness half: a DoT
 :: server is a domain name, and catching a single label here beats a confusing failure
 :: from Android two screens later.
-echo(!_HCHK!| findstr /r /x /c:"[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9.-]*" >nul
-exit /b
+::
+:: PIPE-FREE ON PURPOSE - see the long note in :_pkg_ok. The old `echo(!_HCHK!| findstr`
+:: form reported a hostname containing "&" as VALID and executed the tail of it inside
+:: the pipe, so the guard this comment describes was not actually being enforced.
+if not defined _HCHK exit /b 1
+set "_HCHK=!_HCHK:"=!"
+if not defined _HCHK exit /b 1
+set "_h_bad="
+for /f "delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-" %%c in ("!_HCHK!") do set "_h_bad=%%c"
+if defined _h_bad exit /b 1
+:: a DoT server is a domain name - require at least one dot
+if "!_HCHK!"=="!_HCHK:.=!" exit /b 1
+:: must start with a letter or digit, not a dot or a hyphen
+set "_h_bad="
+for /f "delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" %%c in ("!_HCHK:~0,1!") do set "_h_bad=%%c"
+if defined _h_bad exit /b 1
+exit /b 0
 
 :netboost_dns
 cls
@@ -5681,7 +5770,6 @@ if errorlevel 1 (
 echo  [%g%OK%w%] %~1 %~2
 set /a DCX_VOK+=1
 exit /b 0
-
 :: thermal
 :thermal
 @echo off
@@ -7225,6 +7313,7 @@ echo     %g%[%w%0%g%]%w% Back
 set "IBPICK=" & set /p IBPICK="Restore which? >> "
 if not defined IBPICK goto tw_ib_del
 if "!IBPICK!"=="0" goto tw_icons
+call :_tw_safechk IBPICK || goto tw_ib_del
 echo(!IBPICK!| findstr /r /x /c:"[0-9][0-9]*" >nul || goto tw_ib_del
 set "IBTOK="
 if defined IBT_!IBPICK! for /f "delims=" %%v in ("!IBPICK!") do set "IBTOK=!IBT_%%v!"
@@ -7319,6 +7408,7 @@ if not defined FSNEW goto tw_font
 :: Cyrillic-locale comma decimal (1,15) normalizes to a dot before it can
 :: reach adb - same guard as Optimize > Animation Speed.
 set "FSNEW=!FSNEW:,=.!"
+call :_tw_safechk FSNEW || goto tw_font_bad
 echo(!FSNEW!| findstr /r /x /c:"0\.[5-9][0-9]*" /c:"\.[5-9][0-9]*" /c:"1" /c:"1\.[0-9][0-9]*" /c:"2" /c:"2\.0*" >nul || goto tw_font_bad
 goto tw_font_apply
 
@@ -7371,6 +7461,7 @@ set "LPTNEW=" & set /p LPTNEW="Milliseconds (blank = cancel) >> "
 if not defined LPTNEW goto tw_lpt
 set "LPTNEW=!LPTNEW:"=!"
 if not defined LPTNEW goto tw_lpt
+call :_tw_safechk LPTNEW || goto tw_lpt_bad
 echo(!LPTNEW!| findstr /r /x /c:"[1-9][0-9]" /c:"[1-9][0-9][0-9]" /c:"[1-9][0-9][0-9][0-9]" >nul || goto tw_lpt_bad
 goto tw_lpt_apply
 
@@ -7426,6 +7517,7 @@ set "SAWNEW=" & set /p SAWNEW="Bitmask 0 - 15 (blank = cancel) >> "
 if not defined SAWNEW goto tw_stay
 set "SAWNEW=!SAWNEW:"=!"
 if not defined SAWNEW goto tw_stay
+call :_tw_safechk SAWNEW || goto tw_stay_bad
 echo(!SAWNEW!| findstr /r /x /c:"[0-9]" /c:"1[0-5]" >nul || goto tw_stay_bad
 goto tw_stay_apply
 
@@ -7492,6 +7584,7 @@ set "NDT=" & set /p NDT="Kelvin (blank = cancel) >> "
 if not defined NDT goto tw_night
 set "NDT=!NDT:"=!"
 if not defined NDT goto tw_night
+call :_tw_safechk NDT || goto tw_night_bad
 echo(!NDT!| findstr /r /x /c:"[1-9][0-9][0-9][0-9]" >nul || goto tw_night_bad
 call :_tw_undo_add secure night_display_color_temperature
 adb shell settings put secure night_display_color_temperature !NDT! <nul
@@ -7559,6 +7652,7 @@ set "DMH=" & set /p DMH="Clock as HHMM, e.g. 0930 (blank = cancel) >> "
 if not defined DMH goto tw_demo
 set "DMH=!DMH:"=!"
 if not defined DMH goto tw_demo
+call :_tw_safechk DMH || goto tw_demo_bad
 echo(!DMH!| findstr /r /x /c:"[01][0-9][0-5][0-9]" /c:"2[0-3][0-5][0-9]" >nul || goto tw_demo_bad
 adb shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm !DMH! <nul >nul 2>&1
 echo  Clock set to !DMH! (demo mode must already be on).
@@ -7611,6 +7705,9 @@ echo.
 :: "Optional name ^(blank = auto timestamp^) >> ". Quotes already make ( ) safe here.
 set "PROFNAME=" & set /p PROFNAME="Optional name (blank = auto timestamp) >> "
 set "PROFNAME=!PROFNAME:"=!"
+:: safechk first - it is pipe-free, so it strips & | < > before the findstr probe below
+:: (which IS a pipe, and would re-parse them) ever sees the value.
+if defined PROFNAME call :_tw_safechk PROFNAME || set "PROFNAME="
 if defined PROFNAME (
     echo(!PROFNAME!| findstr /r /x /c:"[a-zA-Z0-9_ .-][a-zA-Z0-9_ .-]*" >nul || (
         echo  %r%Name has unsafe characters - using timestamp instead.%w%
@@ -7733,6 +7830,7 @@ echo     %g%[%w%0%g%]%w% Back
 set "PROFSEL=" & set /p PROFSEL="Apply which? >> "
 if not defined PROFSEL goto tw_prof_apply
 if "!PROFSEL!"=="0" goto tw_profile
+call :_tw_safechk PROFSEL || goto tw_prof_apply
 echo(!PROFSEL!| findstr /r /x /c:"[0-9][0-9]*" >nul || goto tw_prof_apply
 set "PROFF="
 if defined PROF_!PROFSEL! for /f "delims=" %%v in ("!PROFSEL!") do set "PROFF=%PROFDIR%\!PROF_%%v!"
@@ -7774,6 +7872,12 @@ echo    skip - unknown namespace: !PNS!
 exit /b
 
 :_tw_pa_ns_ok
+:: safechk BEFORE the findstr probe: a profile is a text file the user can hand-edit or
+:: receive from someone else, so PKEY is the least trusted value in the script. The probe
+:: below is a pipe, and a pipe re-parses the expanded value - a key containing "&" would
+:: otherwise be reported valid AND have its tail executed. safechk is pipe-free, so it is
+:: safe to run first; it rejects & | < > before they can reach the pipe.
+call :_tw_safechk PKEY || goto _tw_pa_badkey
 echo(!PKEY!| findstr /r /x /c:"[a-zA-Z0-9_.-][a-zA-Z0-9_.-]*" >nul || goto _tw_pa_badkey
 if /i "!PVAL!"=="DELETE" goto _tw_pa_del
 if not defined PVAL goto _tw_pa_badval
@@ -7942,6 +8046,7 @@ echo     %g%[%w%0%g%]%w% Back
 set "QSPICK=" & set /p QSPICK="Remove which? >> "
 if not defined QSPICK goto tw_qs_del
 if "!QSPICK!"=="0" goto tw_qs
+call :_tw_safechk QSPICK || goto tw_qs_del
 echo(!QSPICK!| findstr /r /x /c:"[0-9][0-9]*" >nul || goto tw_qs_del
 set "QSTOK="
 if defined QST_!QSPICK! for /f "delims=" %%v in ("!QSPICK!") do set "QSTOK=!QST_%%v!"
@@ -7967,9 +8072,28 @@ goto tw_qs
 :: expands the value too, so it could never have protected the thing it was checking.
 ::
 :: Android package names are Java-style: a letter first, then letters, digits, dots and
-:: underscores. Same echo(/findstr idiom the QS index check already uses.
-echo(!_PKGCHK!| findstr /r /x /c:"[a-zA-Z][a-zA-Z0-9_.]*" >nul
-exit /b
+:: underscores.
+::
+:: PIPE-FREE ON PURPOSE - do not "simplify" this back to `echo(!_PKGCHK!| findstr ...`.
+:: A pipe makes cmd build the child's command line from the ALREADY-EXPANDED value and
+:: parse it a second time, so "com.foo&echo hi" split at the &: findstr saw only
+:: "com.foo", returned 0, and this routine reported VALID - while the half after the &
+:: executed inside the pipe with its output swallowed. The check both passed the bad
+:: name and ran part of it, which is the exact opposite of its job. Measured, not
+:: theorised. `for /f "delims=<allowed>"` never builds a command line: if the value is
+:: made only of allowed characters they are all delimiters, so there is no token at all
+:: and the loop body never runs. Anything left over is the first offending character.
+if not defined _PKGCHK exit /b 1
+set "_PKGCHK=!_PKGCHK:"=!"
+if not defined _PKGCHK exit /b 1
+set "_pk_bad="
+for /f "delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._" %%c in ("!_PKGCHK!") do set "_pk_bad=%%c"
+if defined _pk_bad exit /b 1
+:: shape: must start with a letter, not a digit or a dot
+set "_pk_bad="
+for /f "delims=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" %%c in ("!_PKGCHK:~0,1!") do set "_pk_bad=%%c"
+if defined _pk_bad exit /b 1
+exit /b 0
 
 :_tw_qs_enum
 :: Split QSCUR into QST_1..QST_n on commas that are NOT inside (...).
@@ -8227,6 +8351,7 @@ set "BSNEW=" & set /p BSNEW="Percentage 0 - 99 (blank = cancel) >> "
 if not defined BSNEW goto tw_bsav
 set "BSNEW=!BSNEW:"=!"
 if not defined BSNEW goto tw_bsav
+call :_tw_safechk BSNEW || goto tw_bsav_bad
 echo(!BSNEW!| findstr /r /x /c:"[0-9]" /c:"[1-9][0-9]" >nul || goto tw_bsav_bad
 goto tw_bsav_apply
 
