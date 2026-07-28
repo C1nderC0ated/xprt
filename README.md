@@ -56,12 +56,16 @@ DCX neo is a community tool, not affiliated with Google or any manufacturer.
 
 ## First run
 
-On startup DCX neo sets up ANSI colours, verifies ADB, waits up to 10 s for
-an authorised device, and — if more than one is attached — asks which one to target
-an authorised device — if none appears you can jump straight to **[W] Wireless
-ADB setup** or **[R]etry** instead of exiting. It then prints your device model
-and Android API level, e.g. `Device: Pixel 7   API level: 34`. The Main, Gaming,
+On startup DCX neo sets up ANSI colours, verifies ADB, and waits up to 10 s for
+an authorised device. If more than one is attached it asks which to target; if
+none appears you can jump straight to **[W] Wireless ADB setup** or **[R]etry**
+instead of exiting. It then prints your device model and Android API level, e.g.
+`Device: Pixel 7   API level: 34`, and opens the main menu. The Main, Gaming,
 Battery and Optimize screens show a live header with **uptime** and **CPU load**.
+
+> Earlier builds got as far as the device line and then **closed instead of
+> opening the menu** — see [Troubleshooting](#troubleshooting) if you're on an
+> older copy.
 
 ---
 
@@ -96,7 +100,7 @@ Battery and Optimize screens show a live header with **uptime** and **CPU load**
 | 2 | **Thermal override (temporary)** | `cmd thermalservice override-status` (0–6) to relax throttling. Usually clears on reboot — not a permanent cooling profile. Validated input. |
 | 3 | **Toggle Package Verifier** | Play Protect package verification on/off. |
 | 4 | **Toggle Game-Overlay** | Game Manager downscale + optional `game_overlay` DeviceConfig (14+ may need root). |
-| 5 | **Performance props (debug/OEM dump)** | Large dump of debug/OEM `setprop`s — volatile and mixed; not a guaranteed FPS mode. Lasting bits are mainly `low_power` off + thermal reset. |
+| 5 | **Performance props (debug/OEM dump)** | Large dump of debug/OEM `setprop`s — volatile and mixed; not a guaranteed FPS mode. Lasting bits are mainly `low_power` off + thermal reset. No longer switches off SQLite durability — [that trade isn't worth making](#what-actually-works-vs-placebo). |
 | 6 | **TCP / DNS / network mode** | TCP receive-window hint, **Private DNS** (Cloudflare / Google / AdGuard / Quad9 / your own DoT hostname / back to automatic), preferred network mode (LTE/5G), full revert. ⚠️ see below. |
 | 7 | **GPU Renderer** | Switch HWUI renderer: `skiagl` (default) / `skiavk` (Skia Vulkan) / clear. |
 | 8 | **Force ANGLE for All Apps** | Route all GLES apps through ANGLE. ⚠️ see below. |
@@ -137,7 +141,7 @@ Two pages.
 | 7 | **Aggressive saver constants** | Not OEM “Extreme power saving” — tweaks `battery_saver_constants`, power mode, related flags. |
 | 8 | **Toggle Send Error** | Crash/diagnostic reporting keys (`send_action_app_error` + OEM extras). |
 | 9 | **ART lock profiling (dev)** | `device_config … disable_lock_profiling` — developer/debug only, not battery/FPS. |
-| 10 | **Toggle Logs/etc** | Broad log/metric silencing. Does **not** freeze DeviceConfig server sync (that lives under Tweaks). |
+| 10 | **Toggle Logs/etc** | Broad log/metric silencing. Does **not** freeze DeviceConfig server sync (that lives under Tweaks), no longer switches off SQLite durability ([why](#what-actually-works-vs-placebo)), and no longer deletes your `gpu_debug_layers` value. **On** now reverts everything **Off** sets, including `persist.*` props that survive reboot. |
 | 11 | **Next Page** | — |
 | 12 | **Back** | — |
 
@@ -191,8 +195,9 @@ all apps can take **5–30+ min** and warms the device — keep it on a charger.
 **Tweak SurfaceFlinger:** pick a refresh rate (**60/90/120/144 Hz**), then a
 profile (**Balance / Low-latency / Conserving offsets**). These write volatile
 `debug.sf.*` phase-offset props — they do **not** lock Hz (use Battery →
-Refresh Rate Lock for that). **Remove** clears those known props with empty
-`setprop` (this boot) and offers an optional reboot.
+Refresh Rate Lock for that). **Remove** clears those known props with an empty
+`setprop` (this boot) and offers an optional reboot. *(Until recently that clear
+silently did nothing — see [Troubleshooting](#troubleshooting).)*
 
 > **Dexopt/compile are version-aware** (no choice needed). On **API ≤ 33** DCX
 > neo uses the classic `pm compile` / `pm bg-dexopt-job` path. On **API ≥ 34**
@@ -257,7 +262,7 @@ opens the backups folder.
 | 10 | **Stay awake while charging** | `global stay_on_while_plugged_in`, a bitmask: AC=1, USB=2, wireless=4, dock=8 (add them; 0 = off). Rough on an OLED panel over time. |
 | 11 | **Night** | Two different features share the name: **dark theme** (`cmd uimode night`) and **night light**, the warm blue-light filter (`night_display_*`). Both live here, labelled apart. |
 | 12 | **More device tweaks** | Camera gestures (double-tap power, twist to flip), charging sounds/vibration, storage low-space warning, battery-saver auto-trigger, freeform windows (needs a reboot), default install location. |
-| 13 | **DeviceConfig server sync** | `device_config set_sync_disabled_for_tests` — freezes **remote DeviceConfig flag updates**, not Google/account sync. Modes: `none` (default), `until_reboot`, `persistent` (survives reboot; confirm). Previously a silent side effect of Battery → Logs Off. |
+| 13 | **DeviceConfig server sync** | `device_config set_sync_disabled_for_tests` — freezes **remote DeviceConfig flag updates**, not Google/account sync. Modes: `none` (default), `until_reboot`, `persistent` (survives reboot; confirm). Previously a silent side effect of Battery → Logs Off. Some builds (EMUI 14 among them) implement the setter but **not** the readback; DCX says so rather than displaying a mode it never read, and Backup skips the key instead of guessing. |
 | 14 | **Undo / backups hub** | Open or run the session/last undo `.bat` (DCX stays open), open the backups folder, or open the last Backup file. Paths are shown on the Tweaks menu itself. |
 | 15 | **Back** | — |
 
@@ -330,6 +335,9 @@ goto :dcx_report
 Captured values are quoted; any settings/`device_config` key unset at backup
 time becomes a `delete` (properties still become a comment) — so a restore
 returns you to the exact prior state and never pins a property to an empty string.
+Values are also read with delayed expansion **off**, so a value containing `!`
+is captured whole; older files could store `Hi!There!` as `Hi` and then restore
+that shortened text over your setting (see [Troubleshooting](#troubleshooting)).
 
 **Backup refuses to run without the device attached, on purpose.** Reading a key
 that the device doesn't answer for looks *identical* to a key that's genuinely
@@ -499,6 +507,23 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 > the menus. If you want them anyway, **Settings Tools → Explorer** will write
 > any key you like — declining a menu row isn't blocking you.
 
+> **And some tweaks are removed because they're harmful, not because they're
+> fake.** DCX no longer writes `debug.sqlite.journalmode OFF`,
+> `debug.sqlite.syncmode OFF` or `debug.sqlite.wal.syncmode OFF` (they were in
+> Battery → **Logs Off** and Gaming → **Performance props**). Those switch off
+> SQLite's durability for **every database on the device**: `journalmode=OFF`
+> removes the rollback journal, so a transaction interrupted by a crash, a
+> kernel panic or a battery pull can't be rolled back and leaves a **corrupt
+> database**; `syncmode=OFF` and its WAL counterpart stop SQLite calling
+> `fsync`, so data an app believes is committed can vanish. What you'd be
+> trading away is contacts, messages and app state — for write throughput you
+> won't notice. `debug.sqlite.journalsizelimit` stays: it only caps the journal
+> **file size** after commit and costs nothing in integrity. Both revert paths
+> (Logs On, Performance Off) now clear the three props, so if you ran an older
+> DCX and haven't rebooted, either one restores `fsync` immediately. Same
+> reasoning already retired `debug.force_low_ram` from Logs Off and the
+> vsync-disabling props from Performance Mode.
+
 > CPU/GPU frequency and governor changes are **not** possible via `setprop` —
 > they live in kernel sysfs and need **root**. Neither is the **speaker
 > amplifier ceiling**: the engineering-menu "max volume" sliders edit vendor
@@ -532,11 +557,14 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 |---|---|
 | **"ADB not found"** on launch | Install Platform Tools and add to `PATH`, or put `adb.exe` in an `adb\` folder next to `DCX.bat`. |
 | **"No authorised device found"** | Enable USB debugging, replug, tap **Allow** on the phone. Check `adb devices` shows `device` (not `unauthorized`). No cable? Press **[W]** for Wireless ADB. |
+| **"Clear"/"Remove"/"On" said it worked but the property was still set** | Fixed — and it hit four features. `adb shell setprop KEY ""` **never clears anything**: cmd strips the quotes, adb re-joins the arguments, and the phone gets `setprop KEY` with one argument, so it prints `usage:` to a swallowed stderr and changes nothing. Affected **SF → Remove**, **Universal Toggle Logs → On**, **Toggle Logs/etc → On** (`persist.log.tag`) and **GPU Renderer → Clear override** — all reporting success. Now `''`, which survives the round trip; verified on-device. Same quote-stripping as the `sysui_qs_tiles` restore bug. |
+| **DeviceConfig server sync shows "none" / always warns the change didn't apply** | Some builds (EMUI 14 included) implement the setter but not the getter — `get_sync_disabled_for_tests` answers *"Invalid command"*. DCX used to read that as `none`, so the screen showed a mode it had never read, the verifier reported a failure it couldn't know about, and **Backup wrote a restore line for a value it never captured**. It now detects the unreadable case, says so, reports `[NOTE] cannot confirm` instead of a false warning, and skips the key in Backup. |
+| **DCX closed by itself right after detecting the device — the main menu never appeared** | Fixed; the big one. After picking the target the script fell *through* into `:pick_device` a second time, and that pass wasn't a `call`, so its `exit /b` ended the batch file. The menu was unreachable on a normal USB start — the only way in was the no-device → **[W]** Wireless ADB → **Back** detour, which is why it looked like "works over Wi-Fi, closes over USB". One `goto` fixes it; the two-device picker also no longer appears twice. |
 | **Wireless connect says "failed to authenticate" / "connection refused"** | Pair this PC first (Wireless ADB → option 1), or the port went stale — it changes on reboot/re-toggle, so grab it fresh from the Wireless-debugging screen. |
 | **Something feels broken after tweaking** | **Reboot** — most live tweaks reset on reboot and that clears it. |
 | **A tweak "didn't do anything"** | Read the value back via **CheckSetting** (graphics: `dumpsys gfxinfo <pkg> \| findstr Pipeline`). Some keys need root or a newer Android. |
 | **CheckSetting report or Wake-Lock Audit saved empty / blank** | Fixed — a bare `)` in an echo annotation like `(first 15)` closed the redirected `( … ) > file` block early; annotations are now escaped (same fix covers the background-dexopt failure list). |
-| **CheckSetting/Wake-Lock report shows `can't create nul` / `findstr` errors, or a blank section** | Fixed — the `\| findstr` filtering leaked to the Android shell; it now runs Android-side (`adb shell "… 2>/dev/null \| grep …"`). |
+| **CheckSetting/Wake-Lock report shows `can't create nul` / `findstr` errors, or a blank section** | Fixed — the `\| findstr` filtering leaked to the Android shell; it now runs Android-side (`adb shell "… 2>/dev/null \| grep …"`). **This originally only covered the generated report.** Wake-Lock Audit → **[3] Show summary only** kept the old form (`adb shell dumpsys power ^<nul 2^>nul ^\| findstr …`): those carets belong inside a `for /f ('…')` clause, and out in the open they make `<`, `>` and `\|` literal, so the whole string was handed to adb and run on the *phone* — which has no `findstr` and no `nul` device. That view now uses `grep` Android-side like the rest, so it prints wake locks instead of shell errors. |
 | **Box characters / logo turn into `?????` after a report or backup (until relaunch)** | Fixed — the timestamp used `powershell Get-Date`, which resets the console code page on exit; it's now built in pure `cmd` from `%date%`/`%time%`. The two places that still need PowerShell (SurfaceFlinger Hz math, quick-settings tile tokenizer) each run `chcp 65001` immediately afterwards, so the code page is restored rather than left for the next `:logo` redraw to repair. |
 | **First apply in a menu jumps back without pausing (second time is fine)** | Fixed — an `adb shell` forwards stdin, so `pause` ate a keystroke; every `adb shell` before a pause now reads stdin from `nul` (`<nul`). |
 | **DeviceConfig flags stopped updating after Logs Off / Sync Off** | Fixed — `set_sync_disabled_for_tests persistent` was a silent side effect of those toggles. It now lives only under **Tweaks → DeviceConfig server sync**; pick **Allow sync (none)** to undo a leftover freeze. |
@@ -550,7 +578,13 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | **Most apps crash after enabling ANGLE** | Common on non-Pixel GPUs; **a reboot won't help** (it persists). Gaming → Force ANGLE → **Disable**/**Delete**. |
 | **Name lookups stopped working after setting Private DNS** | Some networks (hotel/captive portals, some corporate Wi-Fi, a few mobile carriers) block outbound DNS-over-TLS, and Android then fails lookups rather than falling back. Gaming → **TCP / DNS / network mode** → **Private DNS** → **Automatic (device default)** puts it straight back. That option exists on its own precisely so you don't have to use **Revert**, which would also drop the TCP hint and network mode. |
 | **Wi-Fi died after TCP / DNS / network mode (old Network Boost)** | Gaming → **TCP / DNS / network mode** → **Revert** (clears any old Wi-Fi keys). |
-| **ART Service printed a wall of text** | Not errors — older versions dumped a line per package. Current builds show a summary (optimised/failed) and only real failures; a few failures are normal. |
+| **ART Service printed a wall of text** | Not errors — older versions dumped a line per package. Current builds show a summary (optimised/failed) and only real failures; a few failures are normal. The heading said *"Failed entries (first 15)"* while actually paging through every one of them — the cap is now real, and if there are more it says how many it withheld rather than truncating quietly. |
+| **App Manager → List installed packages showed an old list** | Fixed — only `1`/`2`/`3` were handled with no re-ask, so any other key ran no `pm list` and fell through to opening the file. That file has a fixed temp name, so you got the *previous* run's packages, unmarked — and debloat decisions get made off it. Invalid input now re-asks, the file is cleared before each dump, and an empty result says so. |
+| **DCX said a package was installed when it wasn't (or acted on the wrong one)** | Fixed — the probe was a *substring* match, so `com.foo` matched `com.foobar`'s line. All ten call sites now match the whole line. Note the one-character fix (`findstr /x`) alone would have been worse than the bug: adb output can arrive LF-only, which makes findstr see one long line and report *every* package as missing. The output is normalised with `find /v ""` first — the trick Snapshot already uses — verified under both LF-only and CRLF. |
+| **Back from Clear Cache landed in the wrong menu** | Fixed — every screen under **Optimize → Clear Cache** exited two levels up to Optimize, so *Back* skipped its own parent and finishing a trim or wipe dumped you out of the section. Each screen now returns to the one it came from. |
+| **A backup restored a shortened value** | Fixed; worth knowing if you have old backups. Capture ran with delayed expansion on, which **eats `!`** — `Hi!There!` was stored as `Hi`, and that shortened text is what a restore wrote back over your setting. The four capture helpers now read with it off. Rare (few Android values contain `!`), but re-run **Backup** for a clean file. |
+| **A Tweaks change wasn't in the undo script / "this change will NOT be recorded"** | The undo script is rewritten in place before each capture, and the old code checked only that the temp file *existed*, not that it had survived — so a failed rewrite could silently replace a populated undo script with an empty one. It now requires the rewrite to still carry its `:dcx_main` label, keeps the original on any doubt, and **says so** when a write won't be undoable. If you see that warning, check `%USERPROFILE%\dcx_backups` isn't blocked by antivirus or Controlled Folder Access. |
+| **Logs On didn't fully undo Logs Off** | Fixed — `persist.debug.trace_layouts` was set by Logs Off and never reverted, and `persist.*` survives reboot, so one Logs Off pinned it off for good. Logs Off also used to `delete` your `gpu_debug_layers` value, which nothing could restore; that delete is gone, since the master switch beside it already disables the feature. |
 | **"Unknown option: --compile-layouts" / "Unknown command"** | Expected on Android 12+ (removed; gone on 14+ under ART Service). DCX neo skips it automatically and continues. |
 | **Bootloop / something broke after debloat** | Boot to recovery and **factory reset** restores every removed app (they're never deleted from `/system`). To revert a single app, use **App Mgr → Restore**. |
 | **Volume cap is back after a reboot** | By design, not a bug — Android re-writes `audio_safe_volume_state` to *active* at boot on a capped device. Re-apply it, or keep a **Profile** (Settings Tools → 3) and apply that after each reboot. |
@@ -559,7 +593,7 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | **Clock seconds / battery percent did nothing** | Heavily skinned status bars (some OneUI, EMUI) don't read the AOSP keys. The key is set; the skin ignores it. Nothing to fix. |
 | **Freeform windows did nothing** | It needs a **reboot** — it's a developer-options key. The screen offers one. |
 | **A profile line was skipped when I applied it** | Deliberate. Profiles are hand-editable, so every line is re-validated: a bad namespace, key or value prints `skip - …` and the rest of the profile still runs. |
-| **A package name with odd characters did something strange, or the window closed** | Fixed — package names are free text, and they used to reach `adb shell … %pkg%` through *immediate* expansion, so a name containing `&`, `|`, `<` or `>` was parsed by cmd as an operator instead of passed as data. Every use is now late-expanded (`!pkg!`), which makes those characters literal, and a charset check runs before the value reaches adb at all. Note the old "is it installed?" probe could never have caught this: that line expanded the value too. |
+| **A package name with odd characters did something strange, or the window closed** | Fixed — package names are free text, and they used to reach `adb shell … %pkg%` through *immediate* expansion, so a name containing `&`, `\|`, `<` or `>` was parsed by cmd as an operator instead of passed as data. Every use is now late-expanded (`!pkg!`), which makes those characters literal, and a charset check runs before the value reaches adb at all. Note the old "is it installed?" probe could never have caught this: that line expanded the value too. |
 | **Backup/undo `.bat` flashes and closes / says `Add was unexpected at this time.`** | Fixed — help text used `1) Add …` inside an `if ( )` block (cmd treated `1)` as the end of the block), and undo lines could land *after* `:dcx_hold` so a double-click exited before any restores. New scripts use `[1]`/`[2]`/`[3]`, put helpers before `:dcx_main`, and always pause unless `/nopause`. Re-run **Backup** or a Tweaks write to regenerate; or use Tweaks → **[14]** on the repaired session undo. |
 | **Running undo/restore from DCX closed the whole DCX window** | Fixed — DCX now launches those scripts with `cmd /c … /nopause` so the child cannot take over (or kill) the menu console. |
 | **Standalone backup/undo can’t find adb / restores nothing** | Fixed — scripts embed DCX’s `adb.exe` path (plus `dcx_adb_path.txt` / PATH). If adb is still missing they print `[ERROR]` and wait. Regenerate under current DCX if an old file still calls bare `adb`. |
