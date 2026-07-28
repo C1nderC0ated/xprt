@@ -37,7 +37,7 @@ DCX neo is a community tool, not affiliated with Google or any manufacturer.
 | Requirement | Notes |
 |---|---|
 | **Windows PC** | Runs in `cmd.exe`. Windows 10/11 recommended. |
-| **ADB** | On your `PATH`, **or** as `adb.exe` in an `adb\` folder next to `DCX.bat`. |
+| **ADB** | On your `PATH`, **or** as `adb.exe` in an `adb\` folder next to `DCX.bat` — DCX adds that folder to `PATH` itself, so it works even on images that disable current-directory executable lookup. |
 | **Android device** | **USB debugging** enabled and the PC authorised. |
 | **USB cable** | Or Wi-Fi — the built-in **Wireless ADB** menu (option 13) handles pairing/connecting. |
 
@@ -64,8 +64,7 @@ instead of exiting. It then prints your device model and Android API level, e.g.
 Battery and Optimize screens show a live header with **uptime** and **CPU load**.
 
 > Earlier builds got as far as the device line and then **closed instead of
-> opening the menu** — see [Troubleshooting](#troubleshooting) if you're on an
-> older copy.
+> opening the menu** — see [Troubleshooting](#troubleshooting) if you're on an older copy.
 
 ---
 
@@ -167,7 +166,8 @@ Two pages.
 held wake locks (`dumpsys power`), top holders since charge (`batterystats`),
 Doze state (`deviceidle`), top wakeups (`alarm`) and CPU consumers
 (`cpuinfo`) — then opens it in Notepad, paginates, or summarises, with a guide
-for spotting the app draining your battery.
+for spotting the app draining your battery. The five dumps take ≈5 s with
+progress shown; **0** or **Q** also work as Back on the report menu.
 
 ---
 
@@ -231,7 +231,9 @@ tweaks DCX neo can change** (including `master_sync_status` labelled as placebo
 and DeviceConfig `sync_disabled_for_tests`), network mode, Doze whitelist and
 top RAM consumers. Open it in Notepad, paginate with `MORE`, show an inline
 summary, or **Diff vs previous report** (`fc` against the last CheckSetting run;
-path remembered in `%TEMP%\dcx_last_report_path.txt`).
+path remembered in `%TEMP%\dcx_last_report_path.txt`). Generation is ~50 device
+queries (≈8 s) and prints step-by-step progress; the window can't take input
+until it finishes. On the report menu, **0** or **Q** also work as Back.
 
 ---
 
@@ -245,8 +247,7 @@ permission those apps ask you to grant them.
 `%USERPROFILE%\dcx_backups\dcx_explorer_undo_<timestamp>.bat` before anything
 changes, and all of these keys are also covered by [Backup](#backup--restore).
 The Tweaks menu shows the session/last undo and last backup paths; **[14] Undo /
-backups hub** opens them in Notepad, runs undo/restore (DCX stays open), or
-opens the backups folder.
+backups hub** opens them in Notepad, runs undo/restore (DCX stays open), or opens the backups folder.
 
 | # | Option | What it does |
 |---|---|---|
@@ -279,8 +280,7 @@ opens the backups folder.
 
 > **Dark theme won't budge?** Some ROMs lock night mode, and the uimode service
 > then refuses the change **silently**. DCX prints the mode the device reports
-> back rather than claiming success — if the readout doesn't move, that's the
-> honest answer, not a bug.
+> back rather than claiming success — if the readout doesn't move, that's the honest answer, not a bug.
 
 ---
 
@@ -461,8 +461,7 @@ one isn't. Reachable from the main menu (**15**).
 Android only reads a specific set of settings, properties and `device_config`
 flags. Many "optimization scripts" set hundreds of made-up keys (e.g.
 `persist.sys.cpu.governor`, `debug.cpufreq.max_freq`) that **Android never
-reads** — they're stored but do nothing. DCX neo focuses on commands with a
-**real, documented effect**:
+reads** — they're stored but do nothing. DCX neo focuses on commands with a **real, documented effect**:
 
 - **`pm compile` / `pm bg-dexopt-job` / `pm art dexopt-packages` / `fstrim`** —
   maintenance; the **most noticeable** wins (chosen per Android version).
@@ -473,16 +472,14 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 - **`min_refresh_rate` / `peak_refresh_rate`** — real refresh-rate control.
 - **`wm size` / `wm density`** — real logical-resolution and DPI control
   (Display Scaler). Lowering the render resolution is a genuine, no-root way to
-  gain GPU headroom and cut power draw; `wm size reset` / `wm density reset`
-  fully revert it.
+  gain GPU headroom and cut power draw; `wm size reset` / `wm density reset` fully revert it.
 - **`deviceidle force-idle`, app hibernation, `hotword_detection_enabled`,
   `persist.log.tag "*:S"`** — real battery/log switches.
 - **`cmd appops … RUN_IN_BACKGROUND deny`, `pm uninstall -k --user 0`** —
   background restriction and (reversible) debloat (App Manager).
 - **`clock_seconds`, `icon_blacklist`, `sysui_qs_tiles`** — real SystemUI
   tunables. SystemUI *observes* these keys, so they apply live with no restart:
-  the tile list still reads from `sysui_qs_tiles` on current AOSP, content
-  observer and all.
+  the tile list still reads from `sysui_qs_tiles` on current AOSP, content observer and all.
 - **`audio_safe_volume_state`** — real, but honestly **per-boot**; Android
   re-arms it at every boot (see [Tweaks](#tweaks)).
 
@@ -556,7 +553,11 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | Problem | Fix |
 |---|---|
 | **"ADB not found"** on launch | Install Platform Tools and add to `PATH`, or put `adb.exe` in an `adb\` folder next to `DCX.bat`. |
+| **"ADB not found" even though `adb\` is right there next to `DCX.bat`** | Fixed. DCX `cd`s into `adb\` and then calls bare `adb`, which worked only because cmd searches the current directory for executables. Windows images that set `NoDefaultCurrentDirectoryInExePath=1` — hardened and enterprise builds do — turn that off, so every one of the ~1500 adb calls failed and the error told you to install the Platform Tools you already had. DCX now puts that folder on `PATH` explicitly instead of trusting the current directory. Verified both ways: with the variable set the old code reported *ADB not found* and the new code finds it, and nothing changes on a normal image. |
 | **"No authorised device found"** | Enable USB debugging, replug, tap **Allow** on the phone. Check `adb devices` shows `device` (not `unauthorized`). No cable? Press **[W]** for Wireless ADB. |
+| **Stuck in the paginated report view — Q works but 0 does nothing** | Working as designed, now signposted. The paginated view is Windows' own **MORE** pager, and it only understands its own keys: **SPACE** next page, **ENTER** one line, **Q** quit. `0` is a DCX *menu* key, so it means nothing to MORE. Both report screens now spell the keys out before paging **and** put them in the window title, where they stay visible on every page instead of scrolling away. |
+| **CheckSetting / Wake-Lock Audit ignored keypresses and had no way out** | Fixed. Those two report menus were the only ones without the tight re-ask every other menu has, and they had no `cls` — so *any* miss redrew the whole block, including the phantom empty line the console hands `set /p` right after ~50 adb probes. Your first keypress looked ignored, and repeated misses stacked copies of the menu until **Back** scrolled off screen. Reproduced: the old menu spun in an infinite redraw loop and had to be killed; the fixed one re-asks in place. Both now redraw only on a real return and accept **0** or **Q** as Back. |
+| **CheckSetting / Wake-Lock Audit look frozen while generating** | Partly by design, now visible. The report is ~50 device queries (≈8 s) and ~5 dumps (≈5 s), and batch has no way to accept a keypress mid-run — so the window genuinely can't respond until it finishes. It now says so up front and prints step-by-step progress (`[3/6] display and graphics…`) instead of sitting blank. There is no mid-run abort; close the window if you must. |
 | **"Clear"/"Remove"/"On" said it worked but the property was still set** | Fixed — and it hit four features. `adb shell setprop KEY ""` **never clears anything**: cmd strips the quotes, adb re-joins the arguments, and the phone gets `setprop KEY` with one argument, so it prints `usage:` to a swallowed stderr and changes nothing. Affected **SF → Remove**, **Universal Toggle Logs → On**, **Toggle Logs/etc → On** (`persist.log.tag`) and **GPU Renderer → Clear override** — all reporting success. Now `''`, which survives the round trip; verified on-device. Same quote-stripping as the `sysui_qs_tiles` restore bug. |
 | **DeviceConfig server sync shows "none" / always warns the change didn't apply** | Some builds (EMUI 14 included) implement the setter but not the getter — `get_sync_disabled_for_tests` answers *"Invalid command"*. DCX used to read that as `none`, so the screen showed a mode it had never read, the verifier reported a failure it couldn't know about, and **Backup wrote a restore line for a value it never captured**. It now detects the unreadable case, says so, reports `[NOTE] cannot confirm` instead of a false warning, and skips the key in Backup. |
 | **DCX closed by itself right after detecting the device — the main menu never appeared** | Fixed; the big one. After picking the target the script fell *through* into `:pick_device` a second time, and that pass wasn't a `call`, so its `exit /b` ended the batch file. The menu was unreachable on a normal USB start — the only way in was the no-device → **[W]** Wireless ADB → **Back** detour, which is why it looked like "works over Wi-Fi, closes over USB". One `goto` fixes it; the two-device picker also no longer appears twice. |
@@ -593,6 +594,7 @@ reads** — they're stored but do nothing. DCX neo focuses on commands with a
 | **Clock seconds / battery percent did nothing** | Heavily skinned status bars (some OneUI, EMUI) don't read the AOSP keys. The key is set; the skin ignores it. Nothing to fix. |
 | **Freeform windows did nothing** | It needs a **reboot** — it's a developer-options key. The screen offers one. |
 | **A profile line was skipped when I applied it** | Deliberate. Profiles are hand-editable, so every line is re-validated: a bad namespace, key or value prints `skip - …` and the rest of the profile still runs. |
+| **A value with `&` or `\|` was accepted by a prompt that should have rejected it** | Fixed. The charset checks were built as `echo(value \| findstr …`, and a pipe makes cmd hand the *already-expanded* text to a child that parses it again — so `1&echo hi` split at the `&`, findstr saw only `1` and reported **valid**, while the half after the `&` ran inside the pipe with its output swallowed. The check passed the bad value *and* executed part of it. The package-name and DoT-hostname validators are now pipe-free (`for /f "delims=…"`, which never builds a command line), and every remaining prompt runs the pipe-free `:_tw_safechk` first so `&`, `\|`, `<`, `>` can't reach the pipe. Verified: the same input that used to be accepted is now rejected at every prompt. |
 | **A package name with odd characters did something strange, or the window closed** | Fixed — package names are free text, and they used to reach `adb shell … %pkg%` through *immediate* expansion, so a name containing `&`, `\|`, `<` or `>` was parsed by cmd as an operator instead of passed as data. Every use is now late-expanded (`!pkg!`), which makes those characters literal, and a charset check runs before the value reaches adb at all. Note the old "is it installed?" probe could never have caught this: that line expanded the value too. |
 | **Backup/undo `.bat` flashes and closes / says `Add was unexpected at this time.`** | Fixed — help text used `1) Add …` inside an `if ( )` block (cmd treated `1)` as the end of the block), and undo lines could land *after* `:dcx_hold` so a double-click exited before any restores. New scripts use `[1]`/`[2]`/`[3]`, put helpers before `:dcx_main`, and always pause unless `/nopause`. Re-run **Backup** or a Tweaks write to regenerate; or use Tweaks → **[14]** on the repaired session undo. |
 | **Running undo/restore from DCX closed the whole DCX window** | Fixed — DCX now launches those scripts with `cmd /c … /nopause` so the child cannot take over (or kill) the menu console. |
